@@ -1,0 +1,17 @@
+# /etc/systemd/system/infinitum-collector.service
+[Unit]
+Description=Infinitum Data Collector Service
+After=network.target rabbitmq-server.service
+
+[Service]
+User=infinitum
+Group=infinitum
+WorkingDirectory=/opt/collector_service
+ExecStart=/opt/collection_venv/bin/python collector_service.py
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/infinitum/collector.env
+
+[Install]
+WantedBy=multi-user.target

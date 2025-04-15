@@ -1,0 +1,32 @@
+# /etc/infinitum/collector_config.yml
+database:
+  host: tvbvoddb1
+  user: infinitum_reader
+  password: "${DB_PASSWORD}"
+  database: mediaserver
+  replica: tvbvoddb2
+
+rabbitmq:
+  host: localhost
+  vhost: infinitum_vhost
+  user: infinitum_admin
+  password: "${RABBITMQ_PASSWORD}"
+
+collection:
+  batch_size: 5000
+  interval_seconds: 60
+  tables:
+    - name: impressions
+      queue: impressions_queue
+      id_field: id
+      timestamp_field: timestmp
+    - name: webhits
+      queue: webhits_queue
+      id_field: id
+      timestamp_field: timestmp
+    - name: last_site_response
+      queue: pings_queue
+      composite_key:
+        - date
+        - client_id
+        - sitetag_id
