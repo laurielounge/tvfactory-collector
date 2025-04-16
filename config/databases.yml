@@ -1,0 +1,18 @@
+# config/databases.yml
+TVBVODDB1:
+  connection_string: "mysql+pymysql://root:m3d1ac0@10.0.0.54:3306/mediaserver"
+  pool_size: 5
+  pool_recycle: 3600
+  description: "Primary Edge Server Database"
+
+TVBVODDB2:
+  connection_string: "mysql+pymysql://root:m3d1ac0@10.0.0.55:3306/mediaserver"
+  pool_size: 5
+  pool_recycle: 3600
+  description: "Secondary Edge Server Database"
+
+TVFACTORY:
+  connection_string: "mysql+pymysql://root:m3d1ac0@localhost:3306/infinitum_raw_data"
+  pool_size: 10
+  pool_recycle: 1800
+  description: "Target Analytics Database"

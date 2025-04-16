@@ -16,6 +16,7 @@ class DatabaseManager:
     """Manages database connections with aristocratic composure."""
 
     def __init__(self, config_path: str = "config/databases.yml"):
+        self.config = load_configuration(config_path)
         self.engines = {}
         self.session_factories = {}
 
