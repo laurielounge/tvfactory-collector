@@ -78,10 +78,8 @@ class DatabaseManager:
                     return db_key
             except Exception as e:
                 logger.warning(f"Failed to connect to {db_key}: {e}")
-                metrics.increment(f"database.connection_failures.{db_key}")
 
         logger.error(f"Failed to connect to any database in {priority_list}")
-        metrics.increment("database.all_connections_failed")
         return None
 
 

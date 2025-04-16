@@ -33,7 +33,11 @@ class CollectionService:
 
     def collect_and_queue(self):
         """Collects new records and queues them with elegant efficiency"""
-        source_db = self.db_manager.try_source_connections(['tvbvoddb1', 'tvbvoddb2'])
+        try:
+            source_db = self.db_manager.try_source_connections(['TVBVODDB1', 'TVBVODDB2'])
+        except Exception as e:
+            logger.error(f"Error connecting to source databases: {e}")
+            return
         if not source_db:
             logger.error("No source database available. Skipping collection cycle.")
             return
@@ -69,39 +73,42 @@ class CollectionService:
                     SourceWebHit.timestmp <= now
                 ).limit(BATCH_SIZE).all()
 
-                # Queue impressions with appropriate serialization
-                for webhit in webhits:
-                    self.channel.basic_publish(
-                        exchange='',
-                        routing_key='webhits_queue',
-                        body=json.dumps({
-                            'id': webhit.id,
-                            'timestmp': webhit.timestmp.isoformat(),
-                            'client_id': webhit.client_id,
-                            'site_id': webhit.booking_id,
-                            'ipaddress': webhit.ipaddress,
-                            'impression_id': webhit.impression_id
-                        }),
-                        properties=pika.BasicProperties(delivery_mode=2)
-                    )
+            # Queue impressions with appropriate serialization
+            for webhit in webhits:
+                self.channel.basic_publish(
+                    exchange='',
+                    routing_key='webhits_queue',
+                    body=json.dumps({
+                        'id': webhit.id,
+                        'timestmp': webhit.timestmp.isoformat(),
+                        'client_id': webhit.client_id,
+                        'site_id': webhit.site_id,
+                        'ipaddress': webhit.ipaddress,
+                        'impression_id': webhit.impression_id
+                    }),
+                    properties=pika.BasicProperties(delivery_mode=2)
+                )
 
-                pings = session.query(SourceLastSiteResponse).filter(
-                    SourceLastSiteResponse.date >= self.last_run.date()
-                ).limit(5000).all()
+            pings = session.query(SourceLastSiteResponse).filter(
+                SourceLastSiteResponse.date >= self.last_run.date()
+            ).limit(BATCH_SIZE).all()
 
-                # Queue impressions with appropriate serialization
-                for ping in pings:
+            # Queue impressions with appropriate serialization
+            for ping in pings:
+                try:
                     self.channel.basic_publish(
                         exchange='',
                         routing_key='pings_queue',
                         body=json.dumps({
-                            'date': ping.date,
+                            'date': ping.date.isoformat(),
                             'client_id': ping.client_id,
-                            'site_tag_id': ping.site_tag_id,
-                            'hits': webhit.hits
+                            'sitetag_id': ping.sitetag_id,
+                            'hits': ping.hits
                         }),
                         properties=pika.BasicProperties(delivery_mode=2)
                     )
+                except Exception as e:
+                    logger.error(f"Error publishing ping data: {e}")
 
         self.last_run = now
         logger.info(f"Collection cycle completed. Queued {len(impressions)} impressions.")
