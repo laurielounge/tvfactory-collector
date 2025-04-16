@@ -9,7 +9,6 @@ from sqlalchemy.orm import sessionmaker, scoped_session
 
 from config.config import settings
 from core.logger import logger
-from infrastructure.monitoring import metrics
 from utils.yaml_utils import load_configuration
 
 
@@ -17,7 +16,6 @@ class DatabaseManager:
     """Manages database connections with aristocratic composure."""
 
     def __init__(self, config_path: str = "config/databases.yml"):
-        self.config = load_configuration(config_path)
         self.engines = {}
         self.session_factories = {}
 
@@ -65,11 +63,9 @@ class DatabaseManager:
         except Exception as e:
             session.rollback()
             logger.error(f"Session error for {db_key}: {e}")
-            metrics.increment(f"database.errors.{db_key}")
             raise
         finally:
             session.close()
-            metrics.timing(f"database.query_time.{db_key}", time.time() - start_time)
 
     def try_source_connections(self, priority_list: list) -> Optional[str]:
         """Attempts connections with sophisticated fallback mechanics."""

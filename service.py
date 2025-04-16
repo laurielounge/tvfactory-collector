@@ -1,12 +1,13 @@
 # collector.py
-import time
 import signal
 import sys
+import time
+
 from dotenv import load_dotenv
 
+from core.logger import logger
 from infrastructure.database import get_db_manager
 from services.collector_service import CollectionService
-from core.logger import logger
 
 # Load environment variables from existing .env
 load_dotenv()

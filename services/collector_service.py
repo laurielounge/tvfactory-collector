@@ -1,11 +1,16 @@
 # services/collection_service.py
-from datetime import datetime, timedelta
 import json
+from datetime import datetime, timedelta
+
 import pika
 
 from core.logger import logger
 from infrastructure.database import DatabaseManager
-from model.tvmedia import SourceImpression, SourceWebHit, SourceLastSiteResponse
+from models.impression import SourceImpression
+from models.ping import SourceLastSiteResponse
+from models.webhit import SourceWebHit
+
+BATCH_SIZE = 10
 
 
 class CollectionService:
@@ -40,7 +45,7 @@ class CollectionService:
             impressions = session.query(SourceImpression).filter(
                 SourceImpression.timestmp > self.last_run,
                 SourceImpression.timestmp <= now
-            ).limit(5000).all()
+            ).limit(BATCH_SIZE).all()
 
             # Queue impressions with appropriate serialization
             for impression in impressions:
@@ -59,8 +64,44 @@ class CollectionService:
                     properties=pika.BasicProperties(delivery_mode=2)
                 )
 
-            # Similar extraction and queueing for webhits and pings
-            # Using your existing models
+                webhits = session.query(SourceWebHit).filter(
+                    SourceWebHit.timestmp > self.last_run,
+                    SourceWebHit.timestmp <= now
+                ).limit(BATCH_SIZE).all()
+
+                # Queue impressions with appropriate serialization
+                for webhit in webhits:
+                    self.channel.basic_publish(
+                        exchange='',
+                        routing_key='webhits_queue',
+                        body=json.dumps({
+                            'id': webhit.id,
+                            'timestmp': webhit.timestmp.isoformat(),
+                            'client_id': webhit.client_id,
+                            'site_id': webhit.booking_id,
+                            'ipaddress': webhit.ipaddress,
+                            'impression_id': webhit.impression_id
+                        }),
+                        properties=pika.BasicProperties(delivery_mode=2)
+                    )
+
+                pings = session.query(SourceLastSiteResponse).filter(
+                    SourceLastSiteResponse.date >= self.last_run.date()
+                ).limit(5000).all()
+
+                # Queue impressions with appropriate serialization
+                for ping in pings:
+                    self.channel.basic_publish(
+                        exchange='',
+                        routing_key='pings_queue',
+                        body=json.dumps({
+                            'date': ping.date,
+                            'client_id': ping.client_id,
+                            'site_tag_id': ping.site_tag_id,
+                            'hits': webhit.hits
+                        }),
+                        properties=pika.BasicProperties(delivery_mode=2)
+                    )
 
         self.last_run = now
         logger.info(f"Collection cycle completed. Queued {len(impressions)} impressions.")
