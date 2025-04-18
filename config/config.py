@@ -10,6 +10,14 @@ load_dotenv(override=False)
 
 
 class Settings:
+    # RabbitMQ settings
+    RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
+    RABBITMQ_PORT = int(os.getenv("RABBITMQ_PORT", 5672))
+    RABBITMQ_VHOST = os.getenv("RABBITMQ_VHOST", "/")
+    RABBITMQ_USER = os.getenv("RABBITMQ_USER", "guest")
+    RABBITMQ_PASSWORD = os.getenv("RABBITMQ_PASSWORD", "guest")
+
+
     # Application settings
     TVFACTORY_HOSTNAME = os.getenv("TVFACTORY_HOSTNAME")
     TVFACTORY_PASSWORD = os.getenv("TVFACTORY_PASSWORD")
@@ -67,10 +75,6 @@ class Settings:
     IP_CONCURRENCY = 30
     SIMULATE_IP_API = os.getenv('SIMULATE_IP_API', 'True').lower() in ('true', '1', 't')
 
-    # Redis Configuration
-    REDIS_HOST = '10.0.0.112'
-    REDIS_PORT = 6379
-    REDIS_DB = 0
 
     ML_MODEL_PATH = '/opt/tvfactory/ml_packages/useragent_model.pkl'
     ML_VECTORIZER_PATH = '/opt/tvfactory/ml_packages/vectorizer.pkl'

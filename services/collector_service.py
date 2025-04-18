@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 
 import pika
 
+from config.config import settings
 from core.logger import logger
 from infrastructure.database import DatabaseManager
 from models.impression import SourceImpression
@@ -22,8 +23,13 @@ class CollectionService:
 
         # Connect to RabbitMQ with quiet confidence
         connection = pika.BlockingConnection(
-            pika.ConnectionParameters(host='localhost')
+            pika.ConnectionParameters(
+                host=settings.RABBITMQ_HOST,
+                virtual_host=settings.RABBITMQ_VHOST,
+                credentials=pika.PlainCredentials(settings.RABBITMQ_USER, settings.RABBITMQ_PASSWORD)
+            )
         )
+
         self.channel = connection.channel()
 
         # Declare queues with necessary persistence
@@ -68,10 +74,10 @@ class CollectionService:
                     properties=pika.BasicProperties(delivery_mode=2)
                 )
 
-                webhits = session.query(SourceWebHit).filter(
-                    SourceWebHit.timestmp > self.last_run,
-                    SourceWebHit.timestmp <= now
-                ).limit(BATCH_SIZE).all()
+            webhits = session.query(SourceWebHit).filter(
+                SourceWebHit.timestmp > self.last_run,
+                SourceWebHit.timestmp <= now
+            ).limit(BATCH_SIZE).all()
 
             # Queue impressions with appropriate serialization
             for webhit in webhits:

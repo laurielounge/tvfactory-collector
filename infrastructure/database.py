@@ -3,11 +3,9 @@ import time
 from contextlib import contextmanager
 from typing import Optional
 
-import redis
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, scoped_session
 
-from config.config import settings
 from core.logger import logger
 from utils.yaml_utils import load_configuration
 
@@ -93,14 +91,3 @@ def get_db_manager() -> DatabaseManager:
     if _db_manager is None:
         _db_manager = DatabaseManager()
     return _db_manager
-
-
-# Redis client with refined simplicity
-def get_redis_client():
-    """Returns a Redis client with quiet competence."""
-    return redis.Redis(
-        host=settings.REDIS_HOST,
-        port=settings.REDIS_PORT,
-        db=settings.REDIS_DB,
-        decode_responses=True
-    )
