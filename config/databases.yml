@@ -12,7 +12,7 @@ TVBVODDB2:
   description: "Secondary Edge Server Database"
 
 TVFACTORY:
-  connection_string: "mysql+pymysql://root:m3d1ac0@localhost:3306/infinitum_raw_data"
+  connection_string: "mysql+pymysql://infinitum_writer:m3d1ac0@10.0.0.113:3306/infinitum_raw_data"
   pool_size: 10
   pool_recycle: 1800
   description: "Target Analytics Database"

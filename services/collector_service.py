@@ -8,7 +8,7 @@ from config.config import settings
 from core.logger import logger
 from infrastructure.database import DatabaseManager
 from models.impression import SourceImpression
-from models.ping import SourceLastSiteResponse
+from models.ping import SourceLastSiteResponse, TargetLastSiteResponse
 from models.webhit import SourceWebHit
 
 BATCH_SIZE = 10
@@ -99,22 +99,36 @@ class CollectionService:
                 SourceLastSiteResponse.date >= self.last_run.date()
             ).limit(BATCH_SIZE).all()
 
-            # Queue impressions with appropriate serialization
-            for ping in pings:
-                try:
-                    self.channel.basic_publish(
-                        exchange='',
-                        routing_key='pings_queue',
-                        body=json.dumps({
-                            'date': ping.date.isoformat(),
-                            'client_id': ping.client_id,
-                            'sitetag_id': ping.sitetag_id,
-                            'hits': ping.hits
-                        }),
-                        properties=pika.BasicProperties(delivery_mode=2)
-                    )
-                except Exception as e:
-                    logger.error(f"Error publishing ping data: {e}")
+            with self.db_manager.session_scope('TVFACTORY') as factory_session:
+                for ping in pings:
+                    try:
+                        # Check if the record exists
+                        existing = factory_session.query(TargetLastSiteResponse).filter_by(
+                            date=ping.date,
+                            client_id=ping.client_id,
+                            sitetag_id=ping.sitetag_id
+                        ).first()
+
+                        if existing:
+                            # Update existing record
+                            existing.hits = ping.hits
+                        else:
+                            # Insert new record
+                            new_record = TargetLastSiteResponse(
+                                date=ping.date,
+                                client_id=ping.client_id,
+                                sitetag_id=ping.sitetag_id,
+                                hits=ping.hits
+                            )
+                            factory_session.add(new_record)
+
+                        # Commit each change individually to handle errors gracefully
+                        factory_session.commit()
+
+                    except Exception as e:
+                        factory_session.rollback()
+                        logger.error(
+                            f"Error handling ping data for client {ping.client_id}, sitetag {ping.sitetag_id}: {e}")
 
         self.last_run = now
         logger.info(f"Collection cycle completed. Queued {len(impressions)} impressions.")
