@@ -1,11 +1,14 @@
 # infrastructure/database.py
+import asyncio
 import time
-from contextlib import contextmanager
-from typing import Optional
+from contextlib import asynccontextmanager, contextmanager
+from typing import List, Dict, Optional, AsyncGenerator
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, AsyncEngine
+from sqlalchemy.orm import scoped_session, sessionmaker
 
+from config.config import settings
 from core.logger import logger
 from utils.yaml_utils import load_configuration
 
@@ -91,3 +94,111 @@ def get_db_manager() -> DatabaseManager:
     if _db_manager is None:
         _db_manager = DatabaseManager()
     return _db_manager
+
+
+class AsyncDatabaseManager:
+    """Provides sophisticated async database connections with connection pooling"""
+
+    def __init__(self):
+        self.engines: Dict[str, AsyncEngine] = {}
+        self._init_lock = asyncio.Lock()
+        self._initialized = False
+
+    async def initialize(self):
+        """Initialize database connections if not already done"""
+        async with self._init_lock:
+            if self._initialized:
+                return
+
+            try:
+                # Initialize the standard connections we'll use
+                await self._create_engine('TVFACTORY',
+                                          settings.TVFACTORY_CONNECTION_STRING.replace('mysql://', 'mysql+aiomysql://'))
+
+                for db_name in ['TVBVODDB1', 'TVBVODDB2']:
+                    connection_string = getattr(settings, f"{db_name}_CONNECTION_STRING", None)
+                    if connection_string:
+                        await self._create_engine(db_name,
+                                                  connection_string.replace('mysql://', 'mysql+aiomysql://'))
+
+                self._initialized = True
+                logger.info("AsyncDatabaseManager initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize AsyncDatabaseManager: {e}")
+                raise
+
+    async def _create_engine(self, db_key: str, connection_string: str) -> None:
+        """Create an async SQLAlchemy engine with optimal configuration"""
+        try:
+            engine = create_async_engine(
+                connection_string,
+                pool_pre_ping=True,
+                pool_recycle=3600,
+                pool_size=10,
+                max_overflow=5,
+                echo=settings.SQL_ECHO
+            )
+            self.engines[db_key] = engine
+            logger.debug(f"Created async engine for {db_key}")
+        except Exception as e:
+            logger.error(f"Failed to create async engine for {db_key}: {e}")
+            raise
+
+    @asynccontextmanager
+    async def async_session_scope(self, db_key: str) -> AsyncGenerator[AsyncSession, None]:
+        """Elegant context manager for async database sessions"""
+        if not self._initialized:
+            await self.initialize()
+
+        if db_key not in self.engines:
+            raise ValueError(f"No engine found for {db_key}")
+
+        engine = self.engines[db_key]
+        async_session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        session = async_session_factory()
+
+        try:
+            yield session
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"Error during database session: {e}")
+            raise
+        finally:
+            await session.close()
+
+    async def try_async_source_connections(self, db_keys: List[str]) -> Optional[str]:
+        """Attempt to connect to any of the specified source databases"""
+        if not self._initialized:
+            await self.initialize()
+
+        for db_key in db_keys:
+            if db_key not in self.engines:
+                logger.warning(f"No engine configured for {db_key}")
+                continue
+
+            try:
+                async with self.async_session_scope(db_key) as session:
+                    # Simple test query
+                    await session.execute(text("SELECT 1"))
+                    return db_key
+            except Exception as e:
+                logger.warning(f"Failed to connect to {db_key}: {e}")
+
+        logger.error("No available source database connections")
+        return None
+
+    async def close(self):
+        """Close all database connections with understated efficiency"""
+        if not self._initialized:
+            return
+
+        for db_key, engine in self.engines.items():
+            try:
+                await engine.dispose()
+                logger.debug(f"Closed connection pool for {db_key}")
+            except Exception as e:
+                logger.error(f"Error closing {db_key} connection: {e}")
+
+        self._initialized = False
+        logger.info("AsyncDatabaseManager connections closed")

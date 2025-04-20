@@ -17,3 +17,18 @@ class SourceWebHit(Base):
         Index('idx_webhits_ip_client_site_timestmp', 'ipaddress', 'client_id', 'site_id', 'timestmp'),
         {'schema': 'mediaserver'}
     )
+
+
+class TargetWebHit(Base):
+    __tablename__ = 'webhits'
+    id = Column(BigInteger, Sequence('webhit_id_seq'), primary_key=True)
+    timestmp = Column(TIMESTAMP, nullable=False, default='CURRENT_TIMESTAMP(3)')
+    client_id = Column(Integer, nullable=False)
+    site_id = Column(Integer, nullable=False)
+    ipaddress = Column(String(39), nullable=False)
+    impression_id = Column(Integer, nullable=False)
+
+    __table_args__ = (
+        Index('idx_webhits_ip_client_site_timestmp', 'ipaddress', 'client_id', 'site_id', 'timestmp'),
+        {'schema': 'infinitum_raw_data'}
+    )

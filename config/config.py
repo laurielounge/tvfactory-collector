@@ -17,7 +17,6 @@ class Settings:
     RABBITMQ_USER = os.getenv("RABBITMQ_USER", "guest")
     RABBITMQ_PASSWORD = os.getenv("RABBITMQ_PASSWORD", "guest")
 
-
     # Application settings
     TVFACTORY_HOSTNAME = os.getenv("TVFACTORY_HOSTNAME")
     TVFACTORY_PASSWORD = os.getenv("TVFACTORY_PASSWORD")
@@ -34,16 +33,10 @@ class Settings:
     TVBVODDB2_DATABASE = os.getenv("TVBVODDB2_DATABASE")
     TVBVODDB2_USERNAME = os.getenv("TVBVODDB2_USERNAME")
 
-    IPABSTRACT_API_KEY = os.getenv("IPABSTRACT_API_KEY")
-    ABSTRACT_ENDPOINT = f"https://ipgeolocation.abstractapi.com/v1/?api_key={IPABSTRACT_API_KEY}&ip_address="
-
-    TAGMANAGER_HOSTNAME = os.getenv("TAGMANAGER_HOSTNAME")
-    TAGMANAGER_PASSWORD = os.getenv("TAGMANAGER_PASSWORD")
-    TAGMANAGER_DATABASE = os.getenv("TAGMANAGER_DATABASE")
-    TAGMANAGER_USERNAME = os.getenv("TAGMANAGER_USERNAME")
+    SQL_ECHO = True
 
     # Constructing the connection strings
-    mysql_pre = "mysql+mysqlconnector://"
+    mysql_pre = "mysql://"
 
     TVBVODDB1_CONNECTION_STRING = (
         f'{mysql_pre}{TVBVODDB1_USERNAME}:{TVBVODDB1_PASSWORD}'
@@ -60,11 +53,6 @@ class Settings:
         f'@{TVFACTORY_HOSTNAME}/{TVFACTORY_DATABASE}'
     )
 
-    TAGMANAGER_CONNECTION_STRING = (
-        f'{mysql_pre}{TAGMANAGER_USERNAME}:{TAGMANAGER_PASSWORD}'
-        f'@{TAGMANAGER_HOSTNAME}/{TAGMANAGER_DATABASE}'
-    )
-
     SERVER_TIMEZONE = 'Pacific/Auckland'
     LOCK_NAME = 'update_task_lock'
     LOCK_TIMEOUT = 1200  # 20 minutes (you can adjust per task if needed)
@@ -72,12 +60,6 @@ class Settings:
     BATCH_SIZE = 10000
     RETRY_LIMIT = 3
     RETRY_DELAY = 5
-    IP_CONCURRENCY = 30
-    SIMULATE_IP_API = os.getenv('SIMULATE_IP_API', 'True').lower() in ('true', '1', 't')
-
-
-    ML_MODEL_PATH = '/opt/tvfactory/ml_packages/useragent_model.pkl'
-    ML_VECTORIZER_PATH = '/opt/tvfactory/ml_packages/vectorizer.pkl'
 
     # Logging the loaded configuration values (without sensitive data)
     logger.info(f"Host name to check we read .env: {TVFACTORY_HOSTNAME}")
