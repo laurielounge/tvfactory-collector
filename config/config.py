@@ -33,7 +33,7 @@ class Settings:
     TVBVODDB2_DATABASE = os.getenv("TVBVODDB2_DATABASE")
     TVBVODDB2_USERNAME = os.getenv("TVBVODDB2_USERNAME")
 
-    SQL_ECHO = True
+    SQL_ECHO = False
 
     # Constructing the connection strings
     mysql_pre = "mysql://"
