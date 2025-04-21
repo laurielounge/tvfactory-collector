@@ -24,9 +24,3 @@ collection:
       queue: webhits_queue
       id_field: id
       timestamp_field: timestmp
-    - name: last_site_response
-      queue: pings_queue
-      composite_key:
-        - date
-        - client_id
-        - sitetag_id

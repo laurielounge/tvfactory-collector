@@ -7,7 +7,7 @@ After=network.target rabbitmq-server.service
 User=infinitum
 Group=infinitum
 WorkingDirectory=/opt/collector_service
-ExecStart=/opt/collection_venv/bin/python collector_service.py
+ExecStart=/opt/collection_venv/bin/python service.py
 Restart=on-failure
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
