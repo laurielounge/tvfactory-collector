@@ -3,9 +3,9 @@ import asyncio
 import signal
 import sys
 from functools import partial
-
+from services.redis_collector_service import RedisCollectorService
 from dotenv import load_dotenv
-from services.collector_service import AsyncCollectionService
+# from services.collector_service import AsyncCollectionService
 
 from core.logger import logger
 from infrastructure.database import AsyncDatabaseManager
@@ -59,8 +59,10 @@ async def main():
         await db_manager.initialize()
 
         # Create and initialize the collection service
-        collector = AsyncCollectionService(db_manager, rabbitmq_client)
-        await collector.initialize()
+        # collector = AsyncCollectionService(db_manager, rabbitmq_client)
+        # await collector.initialize()
+        redis_collector = RedisCollectorService(rabbitmq_client)
+        await redis_collector.start(interval_seconds=30)
 
         logger.info("Collection service initialized. Beginning collection cycle.")
 

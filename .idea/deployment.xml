@@ -9,6 +9,13 @@
           </mappings>
         </serverdata>
       </paths>
+      <paths name="TVFactory-Collector (2)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/tmp/pycharm_project_439" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
     </serverData>
     <option name="myAutoUpload" value="ALWAYS" />
   </component>

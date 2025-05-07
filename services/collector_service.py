@@ -1,20 +1,17 @@
 # services/collection_service.py
-import json
 import asyncio
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config.config import settings
 from core.logger import logger
 from infrastructure.database import AsyncDatabaseManager
 from infrastructure.rabbitmq_client import AsyncRabbitMQClient
 from models.impression import SourceImpression
 from models.ping import SourceLastSiteResponse, TargetLastSiteResponse
-from models.webhit import SourceWebHit
 from models.processing_state import ProcessingState
+from models.webhit import SourceWebHit
 
 BATCH_SIZE = 500
 

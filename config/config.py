@@ -32,6 +32,10 @@ class Settings:
     TVBVODDB2_PASSWORD = os.getenv("TVBVODDB2_PASSWORD")
     TVBVODDB2_DATABASE = os.getenv("TVBVODDB2_DATABASE")
     TVBVODDB2_USERNAME = os.getenv("TVBVODDB2_USERNAME")
+    REDIS_HOST = os.getenv("REDIS_HOST")
+    REDIS_PORT = os.getenv("REDIS_PORT")
+    REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
+    REDIS_TIMEOUT = os.getenv("REDIS_TIMEOUT")
 
     SQL_ECHO = False
 
