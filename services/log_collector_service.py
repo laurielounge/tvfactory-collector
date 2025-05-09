@@ -6,7 +6,7 @@ import subprocess
 from urllib.parse import urlparse, parse_qs
 
 from core.logger import logger
-from utils.redis_client import get_redis_client
+from infrastructure.redis_client import get_redis_client
 from utils.timer import StepTimer
 
 LOG_QUEUE = "loghit_queue"
@@ -96,7 +96,8 @@ class LogCollectorService:
             "last_line_hash": line_hash
         })
 
-    def _ssh_fetch_lines(self, hostname, start_line):
+    @staticmethod
+    def _ssh_fetch_lines(hostname, start_line):
         cmd = [
             "ssh", "-p", str(SSH_PORT),
             "-o", "StrictHostKeyChecking=no",
@@ -110,7 +111,8 @@ class LogCollectorService:
             return []
         return result.stdout.splitlines()
 
-    def _hash_line(self, line):
+    @staticmethod
+    def _hash_line(line):
         return hashlib.sha256(line.encode()).hexdigest()
 
     def _process_host(self, hostname):

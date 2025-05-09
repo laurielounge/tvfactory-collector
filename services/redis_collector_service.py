@@ -4,7 +4,7 @@ import asyncio
 import json
 
 from core.logger import logger
-from utils.redis_client import get_redis_client
+from infrastructure.redis_client import get_redis_client
 from utils.timer import StepTimer
 
 timer = StepTimer()
