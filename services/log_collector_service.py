@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import json
 import subprocess
+from urllib.parse import urlparse, parse_qs
 
 from core.logger import logger
 from utils.redis_client import get_redis_client
@@ -12,6 +13,7 @@ LOG_QUEUE = "loghit_queue"
 STATE_KEY_PREFIX = "logstate:"
 SSH_PORT = 822
 LOG_PATH = "/var/log/nginx/shadow_pipeline.log"
+VALID_PATHS = {"/client", "/response", "/impression", "/viewer"}
 
 HOSTS = [
     "10.0.0.50",
@@ -24,6 +26,60 @@ HOSTS = [
     "10.0.0.61",
     "10.0.0.153"
 ]
+
+
+def parse_log_line(raw_line: str) -> dict | None:
+    parts = raw_line.strip().split('\t')
+    if len(parts) < 9:
+        return None  # malformed
+
+    return {
+        "timestamp": parts[0],
+        "edge_ip": parts[1],
+        "method": parts[2],
+        "path": urlparse(parts[3]).path,
+        "query_string": parts[4],
+        "status": parts[5],
+        "user_agent": parts[6],
+        "referer": parts[7],
+        "client_ip": parts[8]
+    }
+
+
+def parse_query_string(qs: str) -> dict:
+    return {k: v[0] for k, v in parse_qs(qs).items()}
+
+
+def classify_entry(entry: dict) -> str | None:
+    path = entry["path"]
+    qs = parse_query_string(entry["query_string"])
+
+    if path in {"/impression", "/viewer"}:
+        if all(k in qs for k in ("client", "booking", "creative")):
+            return "impression"
+    elif path in {"/client", "/response"}:
+        if all(k in qs for k in ("client", "site")):
+            return "webhit"
+    return None  # discard
+
+
+def process_log_payload(raw_json: str) -> tuple[str, dict] | None:
+    try:
+        payload = json.loads(raw_json)
+        entry = parse_log_line(payload["raw"])
+        if not entry:
+            return None
+
+        entry["host"] = payload["host"]
+        entry["line_num"] = payload["line_num"]
+        entry["query"] = parse_query_string(entry["query_string"])
+        category = classify_entry(entry)
+        if not category:
+            return None
+
+        return category, entry
+    except Exception:
+        return None
 
 
 class LogCollectorService:
@@ -99,8 +155,10 @@ class LogCollectorService:
         for host in HOSTS:
             self._process_host(host)
 
-        if not run_once:
-            while True:
-                await asyncio.sleep(interval_seconds)
-                for host in HOSTS:
-                    self._process_host(host)
+        if run_once:
+            return  # ✅ exit cleanly after one pass
+
+        while True:
+            await asyncio.sleep(interval_seconds)
+            for host in HOSTS:
+                self._process_host(host)
