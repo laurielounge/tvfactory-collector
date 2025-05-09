@@ -1,18 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="TVFactory-Collector" remoteFilesAllowedToDisappearOnAutoupload="false" autoUploadExternalChanges="true">
+  <component name="PublishConfigData" autoUpload="Always" serverName="Collector" remoteFilesAllowedToDisappearOnAutoupload="false" autoUploadExternalChanges="true">
     <serverData>
-      <paths name="TVFactory-Collector">
+      <paths name="Collector">
         <serverdata>
           <mappings>
             <mapping deploy="/collector_service" local="$PROJECT_DIR$" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="TVFactory-Collector (2)">
-        <serverdata>
-          <mappings>
-            <mapping deploy="/tmp/pycharm_project_439" local="$PROJECT_DIR$" />
           </mappings>
         </serverdata>
       </paths>
