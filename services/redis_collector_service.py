@@ -5,7 +5,9 @@ import json
 
 from core.logger import logger
 from utils.redis_client import get_redis_client
+from utils.timer import StepTimer
 
+timer = StepTimer()
 BATCH_SIZE = 100
 
 
@@ -49,22 +51,26 @@ class RedisCollectorService:
         """Pull from a Redis queue and forward to the appropriate RabbitMQ routing key."""
         total_processed = 0
 
-        for _ in range(BATCH_SIZE):
-            raw = self.redis.rpop(redis_queue)
-            if not raw:
-                break
+        with timer.time(f"{redis_queue}_dequeue"):
+            for _ in range(BATCH_SIZE):
+                raw = self.redis.rpop(redis_queue)
+                if not raw:
+                    break
 
-            try:
-                message = json.loads(raw)
-                await self.rabbitmq.publish(
-                    exchange='',
-                    routing_key=rabbit_queue,
-                    message=message
-                )
-                total_processed += 1
-                logger.debug(f"[REDIS → RABBITMQ] {redis_queue} → {rabbit_queue}: {message}")
-            except Exception as e:
-                logger.error(f"[REDIS SYNC ERROR] Failed to publish from {redis_queue}: {e}")
+                try:
+                    with timer.time(f"{redis_queue}_parse"):
+                        message = json.loads(raw)
+
+                    with timer.time(f"{redis_queue}_publish"):
+                        await self.rabbitmq.publish(
+                            exchange='',
+                            routing_key=rabbit_queue,
+                            message=message
+                        )
+                    total_processed += 1
+                except Exception as e:
+                    logger.error(f"[REDIS SYNC ERROR] Failed to publish from {redis_queue}: {e}")
 
         if total_processed:
             logger.info(f"Processed {total_processed} items from {redis_queue}")
+        timer.tick()

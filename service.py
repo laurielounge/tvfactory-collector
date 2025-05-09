@@ -3,13 +3,16 @@ import asyncio
 import signal
 import sys
 from functools import partial
-from services.redis_collector_service import RedisCollectorService
+
+# from services.redis_collector_service import RedisCollectorService
 from dotenv import load_dotenv
-# from services.collector_service import AsyncCollectionService
 
 from core.logger import logger
 from infrastructure.database import AsyncDatabaseManager
 from infrastructure.rabbitmq_client import AsyncRabbitMQClient
+from services.log_collector_service import LogCollectorService
+
+# from services.collector_service import AsyncCollectionService
 
 # Load environment variables with understated efficiency
 load_dotenv()
@@ -61,13 +64,12 @@ async def main():
         # Create and initialize the collection service
         # collector = AsyncCollectionService(db_manager, rabbitmq_client)
         # await collector.initialize()
-        redis_collector = RedisCollectorService(rabbitmq_client)
-        await redis_collector.start(interval_seconds=30)
-
+        # redis_collector = RedisCollectorService(rabbitmq_client)
+        # await redis_collector.start(interval_seconds=30)
+        collector = LogCollectorService()
         logger.info("Collection service initialized. Beginning collection cycle.")
-
         # Start the collection process with a 30-second interval
-        await collector.start(interval_seconds=30)
+        await collector.start(interval_seconds=30, run_once=True)
     except Exception as e:
         logger.error(f"Fatal error in collection service: {e}")
         sys.exit(1)

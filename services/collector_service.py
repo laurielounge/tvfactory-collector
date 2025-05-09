@@ -14,6 +14,9 @@ from models.processing_state import ProcessingState
 from models.webhit import SourceWebHit
 
 BATCH_SIZE = 500
+from utils.timer import StepTimer
+
+timer = StepTimer()
 
 
 class AsyncCollectionService:
@@ -196,11 +199,13 @@ class AsyncCollectionService:
             async with self.db_manager.async_session_scope(source_db) as session:
                 while True:
                     # Query for the next batch of impressions
-                    result = await session.execute(
-                        select(SourceImpression).where(
-                            SourceImpression.id > current_max_id
-                        ).order_by(SourceImpression.id).limit(BATCH_SIZE)
-                    )
+                    with timer.time("db_fetch_impressions"):
+                        result = await session.execute(
+                            select(SourceImpression).where(
+                                SourceImpression.id > current_max_id
+                            ).order_by(SourceImpression.id).limit(BATCH_SIZE)
+                        )
+
                     impressions = result.scalars().all()
 
                     if not impressions:
@@ -219,11 +224,12 @@ class AsyncCollectionService:
                         }
 
                         # Publish to RabbitMQ
-                        await self.rabbitmq_client.publish(
-                            exchange='',
-                            routing_key='impressions_queue',
-                            message=message
-                        )
+                        with timer.time("impressions_publish"):
+                            await self.rabbitmq_client.publish(
+                                exchange='',
+                                routing_key='impressions_queue',
+                                message=message
+                            )
 
                         # Update the current max ID
                         current_max_id = max(current_max_id, impression.id)
@@ -244,6 +250,7 @@ class AsyncCollectionService:
         except Exception as e:
             logger.error(f"Error processing impressions: {e}")
             raise
+        timer.tick()
 
     async def _process_webhits(self, source_db: str):
         """Process webhits in batches using ID-based pagination"""
@@ -254,11 +261,13 @@ class AsyncCollectionService:
             async with self.db_manager.async_session_scope(source_db) as session:
                 while True:
                     # Query for the next batch of webhits
-                    result = await session.execute(
-                        select(SourceWebHit).where(
-                            SourceWebHit.id > current_max_id
-                        ).order_by(SourceWebHit.id).limit(BATCH_SIZE)
-                    )
+                    with timer.time("db_fetch_webhits"):
+                        result = await session.execute(
+                            select(SourceWebHit).where(
+                                SourceWebHit.id > current_max_id
+                            ).order_by(SourceWebHit.id).limit(BATCH_SIZE)
+                        )
+
                     webhits = result.scalars().all()
 
                     if not webhits:
@@ -276,11 +285,12 @@ class AsyncCollectionService:
                         }
 
                         # Publish to RabbitMQ
-                        await self.rabbitmq_client.publish(
-                            exchange='',
-                            routing_key='webhits_queue',
-                            message=message
-                        )
+                        with timer.time("webhits_publish"):
+                            await self.rabbitmq_client.publish(
+                                exchange='',
+                                routing_key='webhits_queue',
+                                message=message
+                            )
 
                         # Update the current max ID
                         current_max_id = max(current_max_id, webhit.id)
