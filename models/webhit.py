@@ -1,34 +1,19 @@
 # models/webhit.py
-from sqlalchemy import Column, Integer, BigInteger, String, TIMESTAMP, Index, Sequence
+from sqlalchemy import Column, Integer, String, Index, BigInteger, Sequence, func, DateTime
 
 from models import Base
 
 
-class SourceWebHit(Base):
+class WebHit(Base):
     __tablename__ = 'webhits'
-    id = Column(BigInteger, Sequence('webhit_id_seq'), primary_key=True)
-    timestmp = Column(TIMESTAMP, nullable=False, default='CURRENT_TIMESTAMP(3)')
+    id = Column(BigInteger, Sequence('impression_id_seq'), primary_key=True)
+    timestmp = Column(DateTime, nullable=False, server_default=func.current_timestamp())
     client_id = Column(Integer, nullable=False)
     site_id = Column(Integer, nullable=False)
     ipaddress = Column(String(39), nullable=False)
-    impression_id = Column(Integer, nullable=False)
+    impression_id = Column(BigInteger, nullable=False)
 
     __table_args__ = (
         Index('idx_webhits_ip_client_site_timestmp', 'ipaddress', 'client_id', 'site_id', 'timestmp'),
-        {'schema': 'mediaserver'}
-    )
-
-
-class TargetWebHit(Base):
-    __tablename__ = 'webhits'
-    id = Column(BigInteger, Sequence('webhit_id_seq'), primary_key=True)
-    timestmp = Column(TIMESTAMP, nullable=False, default='CURRENT_TIMESTAMP(3)')
-    client_id = Column(Integer, nullable=False)
-    site_id = Column(Integer, nullable=False)
-    ipaddress = Column(String(39), nullable=False)
-    impression_id = Column(Integer, nullable=False)
-
-    __table_args__ = (
-        Index('idx_webhits_ip_client_site_timestmp', 'ipaddress', 'client_id', 'site_id', 'timestmp'),
-        {'schema': 'infinitum_raw_data'}
+        {'schema': 'edge_data'}
     )

@@ -1,9 +1,9 @@
 # /etc/infinitum/collector_config.yml
 database:
-  host: tvbvoddb1
+  host: tvfactory
   user: infinitum_reader
   password: "${DB_PASSWORD}"
-  database: mediaserver
+  database: edge_data
   replica: tvbvoddb2
 
 rabbitmq:

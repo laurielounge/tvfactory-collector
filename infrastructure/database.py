@@ -18,6 +18,7 @@ class DatabaseManager:
 
     def __init__(self, config_path: str = "config/databases.yml"):
         self.config = load_configuration(config_path)
+        logger.info(f"Database configuration: {self.config}")
         self.engines = {}
         self.session_factories = {}
 
@@ -114,12 +115,6 @@ class AsyncDatabaseManager:
                 # Initialize the standard connections we'll use
                 await self._create_engine('TVFACTORY',
                                           settings.TVFACTORY_CONNECTION_STRING.replace('mysql://', 'mysql+aiomysql://'))
-
-                for db_name in ['TVBVODDB1', 'TVBVODDB2']:
-                    connection_string = getattr(settings, f"{db_name}_CONNECTION_STRING", None)
-                    if connection_string:
-                        await self._create_engine(db_name,
-                                                  connection_string.replace('mysql://', 'mysql+aiomysql://'))
 
                 self._initialized = True
                 logger.info("AsyncDatabaseManager initialized successfully")

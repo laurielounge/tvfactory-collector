@@ -26,6 +26,9 @@ class StepTimer:
             self.totals[step] = self.totals.get(step, 0) + elapsed
             self.hits[step] = self.hits.get(step, 0) + 1
 
+            if logger.isEnabledFor(10):  # DEBUG level
+                logger.debug(f"[TIMER] {step} took {elapsed:.4f}s")
+
     def tick(self):
         self.count += 1
         if self.count >= self.interval:

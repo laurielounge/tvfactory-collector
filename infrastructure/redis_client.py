@@ -1,6 +1,6 @@
 # utils/redis_client.py
 
-import redis
+import redis.asyncio as redis
 
 from config.config import settings
 from core.logger import logger
@@ -8,12 +8,11 @@ from core.logger import logger
 _client = None
 
 
-def get_redis_client():
+async def get_redis_client():
     """
-    Creates and returns a singleton Redis client connection.
-
+    Creates and returns a singleton async Redis client connection.
     Returns:
-        redis.Redis: Connected Redis client instance or None if connection fails
+        redis.Redis: Connected async Redis client instance
     """
     global _client
     if _client is None:
@@ -22,12 +21,12 @@ def get_redis_client():
                 host=settings.REDIS_HOST,
                 port=int(settings.REDIS_PORT),
                 password=settings.REDIS_PASSWORD,
+                decode_responses=True,
                 socket_timeout=float(settings.REDIS_TIMEOUT),
-                decode_responses=True
             )
-            logger.debug("Redis client initialized")
+            logger.debug("Async Redis client initialized")
         except Exception as e:
-            logger.error(f"Error creating Redis connection: {e}")
+            logger.error(f"Error creating async Redis connection: {e}")
             return None
     return _client
 
@@ -35,13 +34,10 @@ def get_redis_client():
 def redis_safe(func):
     """
     Decorator for Redis operations that handles exceptions gracefully.
-
     Wraps Redis functions to catch and log exceptions, returning None
     instead of letting exceptions propagate.
-
     Args:
         func: The function to decorate
-
     Returns:
         wrapper: The decorated function that handles Redis exceptions
     """

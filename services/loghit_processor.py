@@ -1,8 +1,10 @@
 # services/loghit_processor.py
 
 import json
+import re
 from urllib.parse import urlparse, parse_qs
 
+INT_HEAD = re.compile(r"^\d+")
 VALID_PATHS = {"/client", "/response", "/impression", "/viewer"}
 
 
@@ -24,18 +26,34 @@ def parse_log_line(raw_line: str) -> dict | None:
     }
 
 
+def extract_leading_int(value: str) -> str:
+    match = INT_HEAD.match(value)
+    return match.group(0) if match else None
+
 def parse_query_string(qs: str) -> dict:
-    return {k: v[0] for k, v in parse_qs(qs).items()}
+    parsed = parse_qs(qs)
+    return {k: extract_leading_int(v[0]) for k, v in parsed.items()}
 
 
 def classify_entry(entry: dict) -> str | None:
     path = entry["path"]
     qs = parse_query_string(entry["query_string"])
 
-    if path in {"/impression", "/viewer"} and all(k in qs for k in ("client", "booking", "creative")):
+    # Normalize aliases
+    aliases = {
+        "client": qs.get("client") or qs.get("c"),
+        "booking": qs.get("booking") or qs.get("campaign") or qs.get("b"),
+        "creative": qs.get("creative") or qs.get("r"),
+        "site": qs.get("site") or qs.get("s"),
+    }
+
+    entry["query"] = {k: v for k, v in aliases.items() if v}  # overwrite with normalized
+
+    if path in {"/impression", "/viewer"} and all(k in aliases for k in ("client", "booking", "creative")):
         return "impression"
-    elif path in {"/client", "/response"} and all(k in qs for k in ("client", "site")):
+    elif path in {"/client", "/response"} and all(k in aliases for k in ("client", "site")):
         return "webhit"
+
     return None
 
 

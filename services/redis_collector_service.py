@@ -4,6 +4,7 @@ import asyncio
 import json
 
 from core.logger import logger
+from infrastructure.rabbitmq_client import AsyncRabbitMQClient
 from infrastructure.redis_client import get_redis_client
 from utils.timer import StepTimer
 
@@ -14,13 +15,22 @@ BATCH_SIZE = 100
 class RedisCollectorService:
     """Collects impression and webhit data from Redis and forwards it to RabbitMQ."""
 
-    def __init__(self, rabbitmq_client):
-        self.redis = get_redis_client()
+    def __init__(self, redis_client, rabbitmq_client):
+        self.redis = None
         self.rabbitmq = rabbitmq_client
+        self.redis = redis_client
         self.running = False
+
+    @classmethod
+    async def create(cls):
+        redis_client = await get_redis_client()
+        rabbitmq = AsyncRabbitMQClient()
+        await rabbitmq.connect()
+        return cls(redis_client, rabbitmq)
 
     async def start(self, interval_seconds: int = 30):
         """Begin the collection cycle from Redis."""
+
         if self.running:
             logger.warning("RedisCollectorService is already running")
             return

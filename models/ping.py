@@ -4,7 +4,7 @@ from sqlalchemy import Column, Integer, Date
 from models import Base
 
 
-class SourceLastSiteResponse(Base):
+class LastSiteResponse(Base):
     __tablename__ = 'last_site_response'
 
     date = Column(Date, nullable=False, primary_key=True)
@@ -12,15 +12,16 @@ class SourceLastSiteResponse(Base):
     sitetag_id = Column(Integer, nullable=False, primary_key=True)
     hits = Column(Integer, nullable=True)
 
-    __table_args__ = {'schema': 'mediaserver'}
+    __table_args__ = {'schema': 'edge_data'}
 
 
-class TargetLastSiteResponse(Base):
-    __tablename__ = 'last_site_response'
+class LastImpressionResponse(Base):
+    __tablename__ = 'last_impression_response'
 
     date = Column(Date, nullable=False, primary_key=True)
     client_id = Column(Integer, nullable=False, primary_key=True)
-    sitetag_id = Column(Integer, nullable=False, primary_key=True)
+    booking_id = Column(Integer, nullable=False, primary_key=True)
+    creative_id = Column(Integer, nullable=False, primary_key=True)
     hits = Column(Integer, nullable=True)
 
-    __table_args__ = {'schema': 'infinitum_summaries'}
+    __table_args__ = {'schema': 'edge_data'}
