@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from datetime import datetime
 
 from sqlalchemy import func, select, and_, text, insert
@@ -11,12 +12,19 @@ from core.logger import logger
 from infrastructure.database import AsyncDatabaseManager
 from infrastructure.rabbitmq_client import AsyncRabbitMQClient
 from infrastructure.redis_client import get_redis_client
-from models.impression import FinishedImpression as Impression
+from models.impression import Impression, FinishedImpression
 from models.webhit import WebHit
 from utils.ip import format_ipv4_as_mapped_ipv6
 from utils.timer import StepTimer
 
-MAX_MESSAGES = 10
+MAX_MESSAGES = 5000
+INT_HEAD = re.compile(r"^\d+")
+
+
+def extract_leading_int(value: str) -> int | None:
+    match = INT_HEAD.match(value)
+    return int(match.group(0)) if match else None
+
 
 class WebhitConsumerService:
     """
@@ -124,7 +132,11 @@ class WebhitConsumerService:
             raw_ip = entry.get("client_ip", "").split(",")[0].strip()
             ip = format_ipv4_as_mapped_ipv6(raw_ip)
             client_id = int(q["client"])
-            site_id = int(q["site"])
+            site_id = extract_leading_int(q["site"])
+            if site_id is None:
+                logger.warning(f"Invalid site ID: {q['site']} — skipping")
+                logger.warning(f"Query string was {q}")
+                return
 
             try:
                 timestmp = datetime.fromisoformat(entry.get("timestamp"))
@@ -163,7 +175,10 @@ class WebhitConsumerService:
                 raw_ip = entry.get("client_ip", "").split(",")[0].strip()
                 ip = format_ipv4_as_mapped_ipv6(raw_ip)
                 client_id = int(q["client"])
-                site_id = int(q["site"])
+                site_id = extract_leading_int(q["site"])
+                if site_id is None:
+                    logger.warning(f"Invalid site ID: {q['site']} — skipping")
+                    return
 
                 try:
                     timestmp = datetime.fromisoformat(entry.get("timestamp"))
@@ -192,8 +207,10 @@ class WebhitConsumerService:
         raw_ip = entry.get("client_ip", "").split(",")[0].strip()
         ip = format_ipv4_as_mapped_ipv6(raw_ip)
         client_id = int(q["client"])
-        site_id = int(q["site"])
-
+        site_id = extract_leading_int(q["site"])
+        if site_id is None:
+            logger.warning(f"Invalid site ID: {q['site']} — skipping")
+            return
         try:
             timestmp = datetime.fromisoformat(entry.get("timestamp"))
         except Exception:
@@ -205,6 +222,7 @@ class WebhitConsumerService:
     async def _process_single_webhit_impl(self, db, client_id, ip, site_id, timestmp, redis_imp_id):
         """Process a single webhit with optimized database and Redis operations."""
         impression_id = int(redis_imp_id) if redis_imp_id else None
+        ip = format_ipv4_as_mapped_ipv6(ip)
 
         # DB lookup if necessary
         if not impression_id:
@@ -221,7 +239,18 @@ class WebhitConsumerService:
                     )
                     row = result.scalar_one_or_none()
                     if not row:
-                        return
+                        result = await db.execute(
+                            select(FinishedImpression.id).where(
+                                and_(
+                                    FinishedImpression.client_id == client_id,
+                                    FinishedImpression.ipaddress == ip,
+                                    FinishedImpression.timestmp > func.now() - text("INTERVAL 7 DAY"),
+                                )
+                            ).order_by(FinishedImpression.timestmp.desc()).limit(1)
+                        )
+                        row = result.scalar_one_or_none()
+                        if not row:
+                            return
                     impression_id = row
             except Exception as e:
                 logger.warning(f"[QUERY ERROR] {e}")

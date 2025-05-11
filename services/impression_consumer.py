@@ -11,7 +11,7 @@ from core.logger import logger
 from infrastructure.database import get_db_manager
 from infrastructure.rabbitmq_client import AsyncRabbitMQClient
 from infrastructure.redis_client import get_redis_client
-from models.impression import Impression
+from models.impression import Impression, FinishedImpression
 from utils.ip import format_ipv4_as_mapped_ipv6
 from utils.timer import StepTimer
 
@@ -125,8 +125,6 @@ class ImpressionConsumerService:
 
         logger.info(f"Processed {len(batch)} impression messages")
         return len(batch)
-
-
 
     async def _handle_impression_batch(self, entries):
         """Process impressions with optimal database and Redis operations."""

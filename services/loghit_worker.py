@@ -7,7 +7,7 @@ from infrastructure.redis_client import get_redis_client
 from services.loghit_processor import process_log_payload
 
 LOG_QUEUE = "loghit_queue"
-
+BATCH_SIZE = 1000
 
 class LoghitWorkerService:
     def __init__(self, redis_client, rabbitmq_client):
@@ -21,7 +21,7 @@ class LoghitWorkerService:
         await rabbitmq_client.connect()
         return cls(redis_client, rabbitmq_client)
 
-    async def start(self, batch_size=100, interval_seconds=1, run_once=False):
+    async def start(self, batch_size=BATCH_SIZE, interval_seconds=1, run_once=False):
         logger.info("LoghitWorkerService started.")
         await self.rabbitmq.connect()
 
