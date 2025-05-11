@@ -1,0 +1,17 @@
+# /etc/systemd/system/logcollector.service
+[Unit]
+Description=Infinitum Log Collector Service
+After=network.target rabbitmq-server.service
+
+[Service]
+User=root
+Group=root
+WorkingDirectory=/opt/collector_service
+ExecStart=/opt/collection_venv/bin/python service.py --role collector
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/infinitum/collector.env
+
+[Install]
+WantedBy=multi-user.target

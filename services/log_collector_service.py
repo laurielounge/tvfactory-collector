@@ -94,7 +94,7 @@ class LogCollectorService:
         redis_client = await get_redis_client()
         return cls(redis_client)
 
-    async def start(self, interval_seconds: int = 30, run_once=False):
+    async def start(self, interval_seconds: int = 300, run_once=False):
         logger.info("Running log collector worker")
         for host in HOSTS:
             await self._process_host(host)
@@ -125,7 +125,7 @@ class LogCollectorService:
             logger.warning(f"[REDIS SET ERROR] {hostname}: {e}")
 
     async def _process_host(self, hostname: str):
-        logger.info(f"Processing host service {hostname}")
+        logger.info(f"Processing host name {hostname}")
         with self.timer.time("fetch_state"):
             state = await self._get_log_state(hostname)
             filename = state.get("filename", LOG_PATH)

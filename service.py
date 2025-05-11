@@ -1,4 +1,4 @@
-# service.py
+# /opt/collector_service/service.py
 import argparse
 import asyncio
 import sys
@@ -45,7 +45,7 @@ async def main():
     if args.role == "collector":
         logger.info("Running log collector worker")
         worker = await LogCollectorService.create()
-        await worker.start(interval_seconds=30, run_once=args.once)
+        await worker.start(interval_seconds=300, run_once=args.once)
 
     elif args.role == "loghit":
         logger.info("Running loghit worker")

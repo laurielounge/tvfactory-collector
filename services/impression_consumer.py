@@ -76,65 +76,75 @@ class ImpressionConsumerService:
         await msg.ack()
 
     async def run_once(self, max_messages=1000):
-        """
-        One-shot processor for a batch of impressions from the queue.
-        Pulls up to `max_messages` and processes them as a batch.
-        """
-        logger.info("ImpressionConsumerService one-shot mode started")
-        count = 0
+        """Efficiently processes messages in proper batches to minimize network overhead."""
+        logger.info("ImpressionConsumerService processing batch")
         batch = []
         messages = []
 
-        for _ in range(max_messages):
-            msg = await self.rabbitmq.get_message(self.queue_name)
-            if not msg:
-                break
-            try:
-                body = msg.body if hasattr(msg, "body") else msg
-                payload = json.loads(body)
-                if self._is_valid_impression(payload):
-                    batch.append(payload)
-                    messages.append(msg)
-                    count += 1
-                else:
-                    logger.debug("Skipping incomplete impression.")
-                    await msg.ack()
-            except Exception as inner:
-                logger.exception(f"[MESSAGE ERROR] Failed to parse message: {inner}")
-                await msg.ack()
+        # The critical optimization: retrieve messages in bulk
+        with self.timer.time("message_retrieval"):
+            # Create connection and channel if needed (once, not per message)
+            if not self.rabbitmq.channel:
+                await self.rabbitmq.connect()
 
-        if batch:
+            # Get queue reference once
+            queue = await self.rabbitmq.channel.declare_queue(
+                self.queue_name, passive=True, durable=True
+            )
+
+            # Set prefetch to improve throughput
+            await self.rabbitmq.channel.set_qos(prefetch_count=max_messages)
+
+            # Batch collect with limited iterator lifetime
+            async with queue.iterator() as queue_iter:
+                async for message in queue_iter:
+                    try:
+                        payload = json.loads(message.body)
+                        if self._is_valid_impression(payload):
+                            batch.append(payload)
+                            messages.append(message)
+                            if len(batch) >= max_messages:
+                                break
+                        else:
+                            await message.ack()
+                    except Exception as e:
+                        logger.exception(f"Message parsing error: {e}")
+                        await message.ack()
+
+        if not batch:
+            return 0
+
+        # Process the collected batch
+        with self.timer.time("processing"):
             await self._handle_impression_batch(batch)
 
-        for msg in messages:
-            await msg.ack()
+        # Acknowledge all messages after successful processing
+        with self.timer.time("acknowledgment"):
+            for msg in messages:
+                await msg.ack()
 
-        logger.info(f"Processed {count} impression messages.")
+        logger.info(f"Processed {len(batch)} impression messages")
+        return len(batch)
 
-    async def _handle_impression_batch(self, entries: list[dict]):
-        """
-        Inserts a batch of impressions into the DB, and updates Redis accordingly:
-        - Stores Redis index for future webhit lookup
-        - Clears site dedupe cache for new impressions
-        """
+
+
+    async def _handle_impression_batch(self, entries):
+        """Process impressions with optimal database and Redis operations."""
         values = []
         redis_updates = []
 
+        # Prepare data arrays
         for entry in entries:
             q = entry["query"]
             raw_ip = entry.get("client_ip", "").split(",")[0].strip()
             ip = format_ipv4_as_mapped_ipv6(raw_ip)
-            ts_raw = entry.get("timestamp")
 
-            try:
-                timestmp = datetime.fromisoformat(ts_raw)
-            except Exception:
-                timestmp = func.now()
+            # Simplified timestamp handling
+            timestmp = datetime.fromisoformat(entry.get("timestamp")) if entry.get("timestamp") else func.now()
 
             client_id = int(q["client"])
             booking_id = int(q["booking"])
             creative_id = int(q["creative"])
-            useragent = entry.get("user_agent", "")
 
             values.append({
                 "timestmp": timestmp,
@@ -142,22 +152,22 @@ class ImpressionConsumerService:
                 "booking_id": booking_id,
                 "creative_id": creative_id,
                 "ipaddress": ip,
-                "useragent": useragent,
+                "useragent": entry.get("user_agent", "")
             })
 
             redis_updates.append((client_id, ip))
 
-        with self.timer.time("prepare_and_insert"):
-            with self.db.session_scope('TVFACTORY') as session:
-                stmt = insert(Impression).values(values).returning(Impression.id)
-                results = session.execute(stmt).scalars().all()
+        # Database operation
+        with self.db.session_scope('TVFACTORY') as session:
+            stmt = insert(Impression).values(values).returning(Impression.id)
+            results = session.execute(stmt).scalars().all()
 
-        with self.timer.time("redis_update"):
-            for (client_id, ip), new_id in zip(redis_updates, results):
-                redis_key = f"imp:{client_id}:{ip}"
-                dedupe_key = f"dedupe:webhit:{client_id}:{ip}"
-                await self.redis.setex(redis_key, settings.ONE_WEEK, new_id)
-                await self.redis.delete(dedupe_key)
-                logger.debug(f"[IMPRESSION INSERTED] client={client_id} ip={ip} id={new_id}")
+        # Redis pipeline operation
+        pipe = self.redis.pipeline()
+        for (client_id, ip), new_id in zip(redis_updates, results):
+            redis_key = f"imp:{client_id}:{ip}"
+            dedupe_key = f"dedupe:webhit:{client_id}:{ip}"
+            pipe.setex(redis_key, settings.ONE_WEEK, new_id)
+            pipe.delete(dedupe_key)
 
-        self.timer.tick()
+        await pipe.execute()

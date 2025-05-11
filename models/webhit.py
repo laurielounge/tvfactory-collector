@@ -6,7 +6,7 @@ from models import Base
 
 class WebHit(Base):
     __tablename__ = 'webhits'
-    id = Column(BigInteger, Sequence('impression_id_seq'), primary_key=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     timestmp = Column(DateTime, nullable=False, server_default=func.current_timestamp())
     client_id = Column(Integer, nullable=False)
     site_id = Column(Integer, nullable=False)

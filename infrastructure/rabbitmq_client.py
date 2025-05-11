@@ -46,7 +46,7 @@ class AsyncRabbitMQClient:
 
                 # Create channel with prefetch for balanced consumption
                 self.channel = await self.connection.channel()
-                await self.channel.set_qos(prefetch_count=10)
+                await self.channel.set_qos(prefetch_count=100)
 
                 # Declare standard queues
                 await self.declare_standard_queues()

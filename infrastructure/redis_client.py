@@ -23,6 +23,9 @@ async def get_redis_client():
                 password=settings.REDIS_PASSWORD,
                 decode_responses=True,
                 socket_timeout=float(settings.REDIS_TIMEOUT),
+                socket_connect_timeout=1.0,
+                socket_keepalive=True,
+                health_check_interval=15,
             )
             logger.debug("Async Redis client initialized")
         except Exception as e:

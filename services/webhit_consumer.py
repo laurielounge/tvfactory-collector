@@ -16,6 +16,7 @@ from models.webhit import WebHit
 from utils.ip import format_ipv4_as_mapped_ipv6
 from utils.timer import StepTimer
 
+MAX_MESSAGES = 10
 
 class WebhitConsumerService:
     """
@@ -44,7 +45,7 @@ class WebhitConsumerService:
         await rabbitmq.connect()
         return cls(redis_client, rabbitmq)
 
-    async def start(self, run_once=True, max_messages=1000):
+    async def start(self, run_once=True, max_messages=MAX_MESSAGES):
         logger.info("WebhitConsumerService started")
         await self.db.initialize()
         await self.rabbitmq.connect()
@@ -59,37 +60,85 @@ class WebhitConsumerService:
             await self.rabbitmq.close()
             logger.info("Connections closed")
 
-    async def run_once(self, max_messages=1000):
-        logger.info("WebhitConsumerService one-shot mode started")
-        count = 0
+    async def run_once(self, max_messages=MAX_MESSAGES):
+        """Processes webhit messages with significantly improved network efficiency."""
+        logger.info("WebhitConsumerService batch processing initiated")
         batch = []
         messages = []
 
-        for _ in range(max_messages):
-            msg = await self.rabbitmq.get_message(self.queue_name)
-            if not msg:
-                break
-            try:
-                body = msg.body if hasattr(msg, "body") else msg
-                entry = json.loads(body)
-                if self._is_valid_webhit(entry):
-                    batch.append(entry)
-                    messages.append(msg)
-                    count += 1
-                else:
-                    logger.debug("Skipping invalid webhit.")
-                    await msg.ack()
-            except Exception as e:
-                logger.warning(f"[WEBHIT ERROR] Parse failed: {e}")
-                await msg.ack()
+        # The critical optimization: Retrieve messages in sophisticated bulk
+        with self.timer.time("message_retrieval"):
+            # Ensure connection exists
+            if not self.rabbitmq.channel:
+                await self.rabbitmq.connect()
+
+            # Get queue reference once, not repeatedly
+            queue = await self.rabbitmq.channel.declare_queue(
+                self.queue_name, passive=True, durable=True
+            )
+
+            # Set prefetch for optimal throughput
+            await self.rabbitmq.channel.set_qos(prefetch_count=max_messages)
+
+            # Collect messages with refined efficiency
+            async with queue.iterator() as queue_iter:
+                async for message in queue_iter:
+                    try:
+                        entry = json.loads(message.body)
+                        if self._is_valid_webhit(entry):
+                            batch.append(entry)
+                            messages.append(message)
+                            if len(batch) >= max_messages:
+                                break
+                        else:
+                            await message.ack()
+                    except Exception as e:
+                        logger.warning(f"[WEBHIT ERROR] Parse failed: {e}")
+                        await message.ack()
 
         if batch:
-            await self._handle_webhit_batch(batch)
+            # Process the batch with appropriate timing
+            with self.timer.time("processing"):
+                await self._handle_webhit_batch(batch)
 
-        for msg in messages:
-            await msg.ack()
+        # Acknowledge all messages after successful processing
+        with self.timer.time("acknowledgment"):
+            for msg in messages:
+                await msg.ack()
 
-        logger.info(f"Processed {count} webhit messages.")
+        count = len(batch)
+        logger.info(f"Processed {count} webhit messages")
+        return count
+
+    async def process_message(self, msg):
+        """
+        Continuous consumption handler with appropriate elegance.
+        Processes incoming webhits with singular focus.
+        """
+        body = msg.body if hasattr(msg, "body") else msg
+        entry = json.loads(body)
+
+        if self._is_valid_webhit(entry):
+            # Extract necessary parameters for processing
+            q = entry["query"]
+            raw_ip = entry.get("client_ip", "").split(",")[0].strip()
+            ip = format_ipv4_as_mapped_ipv6(raw_ip)
+            client_id = int(q["client"])
+            site_id = int(q["site"])
+
+            try:
+                timestmp = datetime.fromisoformat(entry.get("timestamp"))
+            except Exception:
+                timestmp = func.now()
+
+            # Check Redis for impression ID
+            redis_imp_id = await self.redis.get(f"imp:{client_id}:{ip}")
+
+            # Process with our optimized implementation
+            async with self.db.async_session_scope('TVFACTORY') as db:
+                await self._process_single_webhit_impl(db, client_id, ip, site_id, timestmp, redis_imp_id)
+
+        await msg.ack()
 
     @staticmethod
     def _is_valid_webhit(entry: dict) -> bool:
@@ -102,94 +151,117 @@ class WebhitConsumerService:
 
     async def _handle_webhit_batch(self, entries: list[dict]):
         """
-        Processes a batch of valid webhit messages.
-        Each webhit is validated, deduplicated, and possibly inserted into the DB.
+        Processes webhits in efficient batches with pipelined Redis operations.
         """
-        async with self.db.async_session_scope('TVFACTORY') as db:
+        # Phase 1: Gather impression IDs from Redis in one operation
+        redis_keys = []
+        entry_data = []
+
+        with self.timer.time("prepare_batch"):
             for entry in entries:
+                q = entry["query"]
+                raw_ip = entry.get("client_ip", "").split(",")[0].strip()
+                ip = format_ipv4_as_mapped_ipv6(raw_ip)
+                client_id = int(q["client"])
+                site_id = int(q["site"])
+
                 try:
-                    await self._handle_single_webhit(entry, db)
-                except Exception as e:
-                    logger.warning(f"[WEBHIT ERROR] {e}")
+                    timestmp = datetime.fromisoformat(entry.get("timestamp"))
+                except Exception:
+                    timestmp = func.now()
 
-    async def _handle_single_webhit(self, entry: dict, db):
-        """
-        Core webhit processing logic:
-        - Looks up impression from Redis or DB.
-        - Deduplicates by site_id in Redis and DB.
-        - Inserts WebHit if not already seen.
-        """
+                redis_keys.append(f"imp:{client_id}:{ip}")
+                entry_data.append((entry, client_id, ip, site_id, timestmp))
+
+        # Phase 2: Efficient Redis lookups with pipelining
+        with self.timer.time("redis_lookup"):
+            pipe = self.redis.pipeline()
+            for key in redis_keys:
+                pipe.get(key)
+            impression_results = await pipe.execute()
+
+        # Phase 3: Process entries with DB lookups and insertions
+        with self.timer.time("db_processing"):
+            async with self.db.async_session_scope('TVFACTORY') as db:
+                for (entry, client_id, ip, site_id, timestmp), redis_imp_id in zip(entry_data, impression_results):
+                    await self._process_single_webhit_impl(db, client_id, ip, site_id, timestmp, redis_imp_id)
+
+    async def _process_single_webhit(self, entry, db):
+        """Compatibility method for handling entry directly."""
         q = entry["query"]
-        ts_raw = entry.get("timestamp")
-        try:
-            timestmp = datetime.fromisoformat(ts_raw)
-        except Exception:
-            timestmp = func.now()
-
         raw_ip = entry.get("client_ip", "").split(",")[0].strip()
         ip = format_ipv4_as_mapped_ipv6(raw_ip)
         client_id = int(q["client"])
         site_id = int(q["site"])
 
-        logger.debug(f"[WEBHIT] client={client_id} ip={ip} site={site_id}")
+        try:
+            timestmp = datetime.fromisoformat(entry.get("timestamp"))
+        except Exception:
+            timestmp = func.now()
 
         redis_imp_id = await self.redis.get(f"imp:{client_id}:{ip}")
+        await self._process_single_webhit_impl(db, client_id, ip, site_id, timestmp, redis_imp_id)
+
+    async def _process_single_webhit_impl(self, db, client_id, ip, site_id, timestmp, redis_imp_id):
+        """Process a single webhit with optimized database and Redis operations."""
         impression_id = int(redis_imp_id) if redis_imp_id else None
 
+        # DB lookup if necessary
         if not impression_id:
             try:
-                result = await db.execute(
-                    select(Impression.id).where(
-                        and_(
-                            Impression.client_id == client_id,
-                            Impression.ipaddress == ip,
-                            Impression.timestmp > func.now() - text("INTERVAL 7 DAY"),
-                        )
-                    ).order_by(Impression.timestmp.desc()).limit(1)
-                )
-                row = result.scalar_one_or_none()
-                if not row:
-                    logger.debug(f"[WEBHIT] No matching impression in DB for {client_id=} {ip=}")
-                    return
-                impression_id = row
+                with self.timer.time("db_impression_lookup"):
+                    result = await db.execute(
+                        select(Impression.id).where(
+                            and_(
+                                Impression.client_id == client_id,
+                                Impression.ipaddress == ip,
+                                Impression.timestmp > func.now() - text("INTERVAL 7 DAY"),
+                            )
+                        ).order_by(Impression.timestmp.desc()).limit(1)
+                    )
+                    row = result.scalar_one_or_none()
+                    if not row:
+                        return
+                    impression_id = row
             except Exception as e:
                 logger.warning(f"[QUERY ERROR] {e}")
                 return
 
-            impression_id = row[0]
-
-        # Redis deduplication
+        # Deduplication checks - Redis first, then DB if needed
         dedupe_key = f"dedupe:webhit:{client_id}:{ip}"
-        seen_sites = await self.redis.smembers(dedupe_key)
-        if str(site_id) in seen_sites:
-            logger.debug(f"[WEBHIT REDIS DUPLICATE] site={site_id} already seen for {client_id=} {ip=}")
-            return
 
-        # DB deduplication
-        result = await db.execute(
-            select(WebHit.id).where(
-                and_(
-                    WebHit.impression_id == impression_id,
-                    WebHit.site_id == site_id,
-                    WebHit.timestmp > func.now() - text("INTERVAL 1 DAY"),
+        with self.timer.time("deduplication"):
+            # Redis deduplication
+            seen_sites = await self.redis.smembers(dedupe_key)
+            if str(site_id) in seen_sites:
+                return
+
+            # DB deduplication
+            result = await db.execute(
+                select(WebHit.id).where(
+                    and_(
+                        WebHit.impression_id == impression_id,
+                        WebHit.site_id == site_id,
+                        WebHit.timestmp > func.now() - text("INTERVAL 1 DAY"),
+                    )
                 )
             )
-        )
-        if result.scalar_one_or_none():
-            logger.debug(f"[WEBHIT DB DUPLICATE] Already saved for {client_id=} {site_id=} {impression_id=}")
-            return
+            if result.scalar_one_or_none():
+                return
 
-        # Insert WebHit
-        await db.execute(
-            insert(WebHit).values(
-                impression_id=impression_id,
-                client_id=client_id,
-                site_id=site_id,
-                ipaddress=ip,
-                timestmp=timestmp,
+        # Insert webhit and update Redis
+        with self.timer.time("insertion"):
+            await db.execute(
+                insert(WebHit).values(
+                    impression_id=impression_id,
+                    client_id=client_id,
+                    site_id=site_id,
+                    ipaddress=ip,
+                    timestmp=timestmp,
+                )
             )
-        )
-        await self.redis.sadd(dedupe_key, site_id)
-        await self.redis.expire(dedupe_key, settings.ONE_DAY)
 
-        logger.info(f"[WEBHIT SAVED] {client_id=} {site_id=} {ip=} {impression_id=}")
+            pipe = self.redis.pipeline()
+            pipe.sadd(dedupe_key, site_id)
+            pipe.expire(dedupe_key, settings.ONE_DAY)
+            await pipe.execute()

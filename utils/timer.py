@@ -27,7 +27,7 @@ class StepTimer:
             self.hits[step] = self.hits.get(step, 0) + 1
 
             if logger.isEnabledFor(10):  # DEBUG level
-                logger.debug(f"[TIMER] {step} took {elapsed:.4f}s")
+                logger.info(f"[TIMER] {step} took {elapsed:.4f}s")
 
     def tick(self):
         self.count += 1
@@ -36,9 +36,9 @@ class StepTimer:
             self.reset()
 
     def log(self):
-        avg = {k: v / self.count for k, v in self.totals.items()}
-        logger.info(f"[PERF] Averaged over {self.count} hits: " +
-                    ", ".join(f"{k}={v:.4f}s" for k, v in avg.items()))
+        avg = {k: v / self.hits.get(k, 1) for k, v in self.totals.items()}
+        logger.warning(f"[PERF] Timing measurements: " +
+                       ", ".join(f"{k}={v:.4f}s" for k, v in avg.items()))
 
     def reset(self):
         self.totals.clear()
