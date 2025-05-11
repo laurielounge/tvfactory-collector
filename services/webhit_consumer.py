@@ -230,7 +230,6 @@ class WebhitConsumerService:
         """Process a single webhit with optimized database and Redis operations."""
         impression_id = int(redis_imp_id) if redis_imp_id else None
         # ip = format_ipv4_as_mapped_ipv6(ip)
-        timestmp = datetime.fromisoformat("2025-05-11T19:00:00+12:00")
         seven_days_ago = timestmp - timedelta(days=7)
 
         logger.debug(
@@ -291,7 +290,6 @@ class WebhitConsumerService:
                 )
             )
             if result.scalar_one_or_none():
-                logger.debug(f"[PROCESS SINGLE] Webhit already exists for impression {impression_id} and site {site_id} {result.scalar_one_or_none()=}")
                 return
 
         # Insert webhit and update Redis
