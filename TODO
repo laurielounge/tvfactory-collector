@@ -10,3 +10,57 @@ redis raw log entries:
  8) "{\"host\": \"10.0.0.153\", \"line_num\": 43791, \"raw\": \"2025-05-11T12:54:00+12:00\\t192.168.255.42\\tGET\\t/client?client=261&site=256&gtmcb=438139663\\tclient=261&site=256&gtmcb=438139663\\t200\\tMozilla/5.0 (iPhone; CPU iPhone OS 18_3_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3.1 Mobile/15E148 Safari/604.1\\thttps://www.firsttable.co.nz/\\t103.187.6.41\"}"
  9) "{\"host\": \"10.0.0.153\", \"line_num\": 43790, \"raw\": \"2025-05-11T12:53:59+12:00\\t192.168.255.42\\tGET\\t/response?c=310&s=401%27%20style=%27width:%201px;%20height:%201px;%20border:%20none;%20position:%20absolute;%20top:%20-9999px;%20left:%20-9999px;&gtmcb=1808435906\\tc=310&s=401%27%20style=%27width:%201px;%20height:%201px;%20border:%20none;%20position:%20absolute;%20top:%20-9999px;%20left:%20-9999px;&gtmcb=1808435906\\t200\\tMozilla/5.0 (iPhone; CPU iPhone OS 18_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/22E252 Instagram 379.0.0.26.81 (iPhone16,1; iOS 18_4_1; en_GB; en-GB; scale=3.00; 1179x2556; 729569027; IABMV/1)\\thttps://wondershop.sg/\\t128.106.240.2\"}"
 10) "{\"host\": \"10.0.0.153\", \"line_num\": 43789, \"raw\": \"2025-05-11T12:53:59+12:00\\t192.168.255.42\\tGET\\t/health_check\\t-\\t200\\t-\\t-\\t-\"}"
+
+Reset tables:
+
+
+drop table edge_data.impressions;
+create table edge_data.impressions
+(
+    id          bigint auto_increment
+        primary key,
+    timestmp    datetime default current_timestamp() not null,
+    client_id   int                                  not null,
+    booking_id  int                                  not null,
+    creative_id int                                  not null,
+    ipaddress inet6 not null,
+    useragent   varchar(500)                         null
+)
+    AUTO_INCREMENT =40088978
+    charset = utf8mb4;
+
+create index idx_impressions_client_booking_creative_timestmp
+    on edge_data.impressions (client_id, booking_id, creative_id, timestmp);
+
+create index idx_impressions_ip_client_channel_timestmp
+    on edge_data.impressions (client_id, timestmp);
+
+create index idx_impressions_ipaddress
+    on edge_data.impressions (ipaddress);
+
+create index impressions_ipaddress_booking_id_timestmp_index
+    on edge_data.impressions (ipaddress, booking_id, timestmp);
+
+drop table edge_data.webhits;
+create table edge_data.webhits
+(
+    id            bigint auto_increment
+        primary key,
+    timestmp      datetime default current_timestamp() not null,
+    client_id     int                                  null,
+    site_id       int                                  null,
+    ipaddress inet6 not null,
+    impression_id bigint                               null
+)
+    AUTO_INCREMENT = 1053230
+    charset = utf8mb4;
+
+create index webhits_impression_id_index
+    on edge_data.webhits (impression_id);
+
+create index webhits_impression_id_site_id_index
+    on edge_data.webhits (impression_id, site_id);
+
+create index webhits_ipaddress_timestmp_impression_id_index
+    on edge_data.webhits (ipaddress, timestmp, impression_id);
+
