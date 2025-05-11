@@ -3,7 +3,7 @@
 import asyncio
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import func, select, and_, text, insert
 
@@ -93,6 +93,7 @@ class WebhitConsumerService:
                 async for message in queue_iter:
                     try:
                         entry = json.loads(message.body)
+                        logger.info(f"[RUN ONCE] JSON Message received: {entry}")
                         if self._is_valid_webhit(entry):
                             batch.append(entry)
                             messages.append(message)
@@ -129,10 +130,12 @@ class WebhitConsumerService:
         if self._is_valid_webhit(entry):
             # Extract necessary parameters for processing
             q = entry["query"]
+            logger.debug(f"Processing webhit q: {q}")
             raw_ip = entry.get("client_ip", "").split(",")[0].strip()
             ip = format_ipv4_as_mapped_ipv6(raw_ip)
             client_id = int(q["client"])
             site_id = extract_leading_int(q["site"])
+            logger.debug(f"[PROCESS MESSAGE] Processing webhit {site_id=} {client_id=} {ip=}")
             if site_id is None:
                 logger.warning(f"Invalid site ID: {q['site']} — skipping")
                 logger.warning(f"Query string was {q}")
@@ -159,6 +162,7 @@ class WebhitConsumerService:
         requires 'client' and 'site' keys.
         """
         q = entry.get("query", {})
+        logger.debug(f"[IS VALID WEBHIT] Query string was {q} and was {all(k in q for k in ('client', 'site') if q)}")
         return all(k in q for k in ("client", "site"))
 
     async def _handle_webhit_batch(self, entries: list[dict]):
@@ -174,8 +178,11 @@ class WebhitConsumerService:
                 q = entry["query"]
                 raw_ip = entry.get("client_ip", "").split(",")[0].strip()
                 ip = format_ipv4_as_mapped_ipv6(raw_ip)
+                logger.debug(f"[PREPARE BATCH] Processing webhit q: {q} ip is {ip}")
                 client_id = int(q["client"])
                 site_id = extract_leading_int(q["site"])
+                ts = entry.get("timestamp")
+                logger.debug(f"[PREPARE BATCH AFTER SITE EXTRACT] Processing webhit {site_id=} {client_id=} {ip=} {ts=}")
                 if site_id is None:
                     logger.warning(f"Invalid site ID: {q['site']} — skipping")
                     return
@@ -184,7 +191,7 @@ class WebhitConsumerService:
                     timestmp = datetime.fromisoformat(entry.get("timestamp"))
                 except Exception:
                     timestmp = func.now()
-
+                logger.debug(f"[PREPARE BATCH] Processing webhit {site_id=} {client_id=} {ip=} {timestmp=}")
                 redis_keys.append(f"imp:{client_id}:{ip}")
                 entry_data.append((entry, client_id, ip, site_id, timestmp))
 
@@ -215,16 +222,21 @@ class WebhitConsumerService:
             timestmp = datetime.fromisoformat(entry.get("timestamp"))
         except Exception:
             timestmp = func.now()
-
         redis_imp_id = await self.redis.get(f"imp:{client_id}:{ip}")
+
         await self._process_single_webhit_impl(db, client_id, ip, site_id, timestmp, redis_imp_id)
 
     async def _process_single_webhit_impl(self, db, client_id, ip, site_id, timestmp, redis_imp_id):
         """Process a single webhit with optimized database and Redis operations."""
         impression_id = int(redis_imp_id) if redis_imp_id else None
-        ip = format_ipv4_as_mapped_ipv6(ip)
+        # ip = format_ipv4_as_mapped_ipv6(ip)
+        timestmp = datetime.fromisoformat("2025-05-11T19:00:00+12:00")
+        seven_days_ago = timestmp - timedelta(days=7)
 
+        logger.debug(
+            f"[PROCESS SINGLE] Processing webhit for client {client_id}, site {site_id}, IP {ip} with impression ID {impression_id}")
         # DB lookup if necessary
+        row = None
         if not impression_id:
             try:
                 with self.timer.time("db_impression_lookup"):
@@ -233,18 +245,19 @@ class WebhitConsumerService:
                             and_(
                                 Impression.client_id == client_id,
                                 Impression.ipaddress == ip,
-                                Impression.timestmp > func.now() - text("INTERVAL 7 DAY"),
+                                Impression.timestmp > seven_days_ago,
                             )
                         ).order_by(Impression.timestmp.desc()).limit(1)
                     )
                     row = result.scalar_one_or_none()
+
                     if not row:
                         result = await db.execute(
                             select(FinishedImpression.id).where(
                                 and_(
                                     FinishedImpression.client_id == client_id,
                                     FinishedImpression.ipaddress == ip,
-                                    FinishedImpression.timestmp > func.now() - text("INTERVAL 7 DAY"),
+                                    FinishedImpression.timestmp > seven_days_ago,
                                 )
                             ).order_by(FinishedImpression.timestmp.desc()).limit(1)
                         )
@@ -253,43 +266,50 @@ class WebhitConsumerService:
                             return
                     impression_id = row
             except Exception as e:
-                logger.warning(f"[QUERY ERROR] {e}")
+                logger.warning(f"[GET IMPRESSION QUERY ERROR] {e}")
                 return
-
+        logger.debug(f"[PROCESS SINGLE] Impression lookup result: {row}")
         # Deduplication checks - Redis first, then DB if needed
         dedupe_key = f"dedupe:webhit:{client_id}:{ip}"
 
         with self.timer.time("deduplication"):
             # Redis deduplication
             seen_sites = await self.redis.smembers(dedupe_key)
+            logger.debug(f"[PROCESS SINGLE] Redis deduplication check: {seen_sites=}")
             if str(site_id) in seen_sites:
+                logger.debug(f"[PROCESS SINGLE] Redis deduplication failed for {client_id=} {ip=} {site_id=}")
                 return
-
+            logger.debug(f"[PROCESS SINGLE] Redis deduplication passed for {client_id=} {ip=} {site_id=}")
             # DB deduplication
             result = await db.execute(
                 select(WebHit.id).where(
                     and_(
                         WebHit.impression_id == impression_id,
                         WebHit.site_id == site_id,
-                        WebHit.timestmp > func.now() - text("INTERVAL 1 DAY"),
+                        WebHit.timestmp > seven_days_ago,
                     )
                 )
             )
             if result.scalar_one_or_none():
+                logger.debug(f"[PROCESS SINGLE] Webhit already exists for impression {impression_id} and site {site_id} {result.scalar_one_or_none()=}")
                 return
 
         # Insert webhit and update Redis
+        logger.info("[PROCESS SINGLE] Inserting new webhit")
         with self.timer.time("insertion"):
-            await db.execute(
-                insert(WebHit).values(
-                    impression_id=impression_id,
-                    client_id=client_id,
-                    site_id=site_id,
-                    ipaddress=ip,
-                    timestmp=timestmp,
+            try:
+                await db.execute(
+                    insert(WebHit).values(
+                        impression_id=impression_id,
+                        client_id=client_id,
+                        site_id=site_id,
+                        ipaddress=ip,
+                        timestmp=timestmp,
+                    )
                 )
-            )
-
+                await db.commit()
+            except Exception as e:
+                logger.warning(f"[INSERT ERROR] {e}")
             pipe = self.redis.pipeline()
             pipe.sadd(dedupe_key, site_id)
             pipe.expire(dedupe_key, settings.ONE_DAY)

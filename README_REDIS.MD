@@ -3,8 +3,14 @@
 Deleting redis keys:
 
 ```bash
-redis-cli -a 'password' --scan --pattern "logstate:*" | xargs redis-cli del
+redis-cli -a 'password' --scan --pattern "logstate:*" | xargs redis-cli  -a 'password' del
 ```
+What about a queue?
+
+```bash
+rediscli -a 'password' DEL loghit_queue
+```
+
 How many entries in the loghit_queue?
 
 ```bash
@@ -14,6 +20,7 @@ redis-cli -a 'password' LLEN loghit_queue
 ```bash
 redis-cli -a 'password' LRANGE loghit_queue 0 9
 ```
+
 Output:
 
  1) "{\"host\": \"10.0.0.153\", \"line_num\": 53147, \"raw\": \"2025-05-11T14:37:49+12:00\\t192.168.255.42\\tGET\\t/client?client=207&site=189\\tclient=207&site=189\\t200\\tMozilla/5.0 (iPhone; CPU iPhone OS 17_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/136.0.7103.56 Mobile/15E148 Safari/604.1\\thttps://insure.bizcover.co.nz/\\t161.29.97.70\"}"

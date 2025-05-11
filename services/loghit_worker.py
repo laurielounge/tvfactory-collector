@@ -7,7 +7,7 @@ from infrastructure.redis_client import get_redis_client
 from services.loghit_processor import process_log_payload
 
 LOG_QUEUE = "loghit_queue"
-BATCH_SIZE = 1000
+BATCH_SIZE = 5000
 
 class LoghitWorkerService:
     def __init__(self, redis_client, rabbitmq_client):
