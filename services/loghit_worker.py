@@ -2,12 +2,14 @@
 import asyncio
 
 from core.logger import logger
+from infrastructure.circuit_breaker import RedisHealthChecker, RabbitMQHealthChecker, HealthCheckRegistry
 from infrastructure.rabbitmq_client import AsyncRabbitMQClient
 from infrastructure.redis_client import get_redis_client
 from services.loghit_processor import process_log_payload
 
 LOG_QUEUE = "loghit_queue"
 BATCH_SIZE = 5000
+
 
 class LoghitWorkerService:
     def __init__(self, redis_client, rabbitmq_client):
@@ -22,8 +24,14 @@ class LoghitWorkerService:
         return cls(redis_client, rabbitmq_client)
 
     async def start(self, batch_size=BATCH_SIZE, interval_seconds=1, run_once=False):
-        logger.info("LoghitWorkerService started.")
+        logger.info("LoghitWorkerService pre-start.")
         await self.rabbitmq.connect()
+        registry = HealthCheckRegistry(
+            RedisHealthChecker(self.redis),
+            RabbitMQHealthChecker(self.rabbitmq),
+        )
+        await registry.assert_healthy_or_exit()
+        logger.info("LoghitWorkerService started.")
 
         while True:
             count = await self._process_batch(batch_size)

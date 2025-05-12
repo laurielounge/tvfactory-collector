@@ -8,10 +8,12 @@ from sqlalchemy import insert, func
 
 from config.config import settings
 from core.logger import logger
+from infrastructure.circuit_breaker import RedisHealthChecker, RabbitMQHealthChecker, MariaDBHealthChecker, \
+    HealthCheckRegistry
 from infrastructure.database import get_db_manager
 from infrastructure.rabbitmq_client import AsyncRabbitMQClient
 from infrastructure.redis_client import get_redis_client
-from models.impression import Impression, FinishedImpression
+from models.impression import Impression
 from utils.ip import format_ipv4_as_mapped_ipv6
 from utils.timer import StepTimer
 
@@ -52,6 +54,13 @@ class ImpressionConsumerService:
     async def start(self, run_once=False, max_messages=MAX_MESSAGES):
         logger.info("ImpressionConsumerService started")
         await self.rabbitmq.connect()
+        registry = HealthCheckRegistry(
+            RedisHealthChecker(self.redis),
+            RabbitMQHealthChecker(self.rabbitmq),
+            MariaDBHealthChecker(self.db)
+        )
+
+        await registry.assert_healthy_or_exit()
         if run_once:
             await self.run_once(max_messages=max_messages)
         else:

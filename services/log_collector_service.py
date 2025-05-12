@@ -9,6 +9,7 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from core.logger import logger
+from infrastructure.circuit_breaker import RedisHealthChecker, HealthCheckRegistry
 from infrastructure.redis_client import get_redis_client
 from utils.timer import StepTimer
 
@@ -94,7 +95,12 @@ class LogCollectorService:
         return cls(redis_client)
 
     async def start(self, interval_seconds: int = 300, run_once=False):
-        logger.info("Running log collector worker")
+        logger.info("LogCollectorService pre-start.")
+        registry = HealthCheckRegistry(
+            RedisHealthChecker(self.redis),
+        )
+        await registry.assert_healthy_or_exit()
+        logger.info("LogCollectorService started.")
         for host in HOSTS:
             await self._process_host(host)
 
@@ -105,6 +111,7 @@ class LogCollectorService:
             await asyncio.sleep(interval_seconds)
             for host in HOSTS:
                 await self._process_host(host)
+            logger.info("Finished log collecting")
 
     async def _get_log_state(self, hostname: str) -> dict:
         try:

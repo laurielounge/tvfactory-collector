@@ -5,10 +5,12 @@ import json
 import re
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select, and_, text, insert
+from sqlalchemy import func, select, and_, insert
 
 from config.config import settings
 from core.logger import logger
+from infrastructure.circuit_breaker import RedisHealthChecker, RabbitMQHealthChecker, MariaDBHealthChecker, \
+    HealthCheckRegistry
 from infrastructure.database import AsyncDatabaseManager
 from infrastructure.rabbitmq_client import AsyncRabbitMQClient
 from infrastructure.redis_client import get_redis_client
@@ -57,6 +59,13 @@ class WebhitConsumerService:
         logger.info("WebhitConsumerService started")
         await self.db.initialize()
         await self.rabbitmq.connect()
+        registry = HealthCheckRegistry(
+            RedisHealthChecker(self.redis),
+            RabbitMQHealthChecker(self.rabbitmq),
+            MariaDBHealthChecker(self.db)
+        )
+
+        await registry.assert_healthy_or_exit()
         try:
             if run_once:
                 await self.run_once(max_messages=max_messages)
