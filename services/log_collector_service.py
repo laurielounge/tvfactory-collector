@@ -3,7 +3,6 @@ import asyncio
 import hashlib
 import json
 import subprocess
-from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 from redis.asyncio import Redis
@@ -20,7 +19,7 @@ LOG_PATH = "/var/log/nginx/shadow_pipeline.log"
 VALID_PATHS = {"/client", "/response", "/impression", "/viewer"}
 
 HOSTS = ["10.0.0.50", "10.0.0.51", "10.0.0.52", "10.0.0.53", "10.0.0.150", "10.0.0.151", "10.0.0.60", "10.0.0.61",
-         "10.0.0.153"]
+         "10.0.0.153", "10.0.0.154"]
 
 
 # --- Utility Functions ---

@@ -1,5 +1,4 @@
 # /etc/systemd/system/loghit.service
-# /etc/systemd/system/loghit.service
 [Unit]
 Description=Infinitum Sequence Processing Service
 After=network.target rabbitmq-server.service
