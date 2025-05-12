@@ -88,22 +88,24 @@ class WebhitConsumerService:
             # Set prefetch for optimal throughput
             await self.rabbitmq.channel.set_qos(prefetch_count=max_messages)
 
-            # Collect messages with refined efficiency
-            async with queue.iterator() as queue_iter:
-                async for message in queue_iter:
-                    try:
-                        entry = json.loads(message.body)
-                        logger.info(f"[RUN ONCE] JSON Message received: {entry}")
-                        if self._is_valid_webhit(entry):
-                            batch.append(entry)
-                            messages.append(message)
-                            if len(batch) >= max_messages:
-                                break
-                        else:
+            # Efficient message collection with timeout
+            try:
+                async with queue.iterator(timeout=2.0) as queue_iter:
+                    async for message in queue_iter:
+                        try:
+                            payload = json.loads(message.body)
+                            if self._is_valid_webhit(payload):
+                                batch.append(payload)
+                                messages.append(message)
+                                if len(batch) >= max_messages:
+                                    break
+                            else:
+                                await message.ack()
+                        except Exception as e:
+                            logger.exception(f"Message parsing error: {e}")
                             await message.ack()
-                    except Exception as e:
-                        logger.warning(f"[WEBHIT ERROR] Parse failed: {e}")
-                        await message.ack()
+            except TimeoutError:
+                logger.debug("Queue iterator timed out - this is normal when queue is empty or paused")
 
         if batch:
             # Process the batch with appropriate timing
@@ -182,7 +184,8 @@ class WebhitConsumerService:
                 client_id = int(q["client"])
                 site_id = extract_leading_int(q["site"])
                 ts = entry.get("timestamp")
-                logger.debug(f"[PREPARE BATCH AFTER SITE EXTRACT] Processing webhit {site_id=} {client_id=} {ip=} {ts=}")
+                logger.debug(
+                    f"[PREPARE BATCH AFTER SITE EXTRACT] Processing webhit {site_id=} {client_id=} {ip=} {ts=}")
                 if site_id is None:
                     logger.warning(f"Invalid site ID: {q['site']} — skipping")
                     return
@@ -248,7 +251,7 @@ class WebhitConsumerService:
                             )
                         ).order_by(Impression.timestmp.desc()).limit(1)
                     )
-                    row = result.scalar_one_or_none()
+                    row = result.scalars().first()
 
                     if not row:
                         result = await db.execute(
@@ -260,7 +263,7 @@ class WebhitConsumerService:
                                 )
                             ).order_by(FinishedImpression.timestmp.desc()).limit(1)
                         )
-                        row = result.scalar_one_or_none()
+                        row = result.scalars().first()
                         if not row:
                             return
                     impression_id = row
@@ -289,11 +292,11 @@ class WebhitConsumerService:
                     )
                 )
             )
-            if result.scalar_one_or_none():
+            if result.scalars().first():
                 return
 
         # Insert webhit and update Redis
-        logger.info("[PROCESS SINGLE] Inserting new webhit")
+        logger.debug("[PROCESS SINGLE] Inserting new webhit")
         with self.timer.time("insertion"):
             try:
                 await db.execute(

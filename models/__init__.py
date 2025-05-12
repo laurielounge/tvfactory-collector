@@ -1,4 +1,4 @@
-# model/__init__.py
+# models/__init__.py
 from ipaddress import ip_address, IPv6Address
 
 from sqlalchemy.ext.declarative import declarative_base

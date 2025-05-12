@@ -53,8 +53,14 @@ async def main():
         await worker.start(batch_size=5000, interval_seconds=1, run_once=args.once)
 
     elif args.role == "impression":
-        service = await ImpressionConsumerService.create()
-        await service.start(run_once=args.once)
+        logger.info("Running impression consumer")
+        try:
+            service = await ImpressionConsumerService.create()
+            await service.start(run_once=args.once)
+        except Exception as e:
+            import traceback
+            logger.error(f"Unhandled exception: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
 
     elif args.role == "webhit":
         logger.info("Running webhit worker")

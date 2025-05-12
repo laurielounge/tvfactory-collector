@@ -15,6 +15,8 @@ from models.impression import Impression, FinishedImpression
 from utils.ip import format_ipv4_as_mapped_ipv6
 from utils.timer import StepTimer
 
+MAX_MESSAGES = 1000
+
 
 class ImpressionConsumerService:
     """
@@ -47,7 +49,7 @@ class ImpressionConsumerService:
         await rabbitmq.connect()
         return cls(redis_client, rabbitmq)
 
-    async def start(self, run_once=False, max_messages=1000):
+    async def start(self, run_once=False, max_messages=MAX_MESSAGES):
         logger.info("ImpressionConsumerService started")
         await self.rabbitmq.connect()
         if run_once:
@@ -75,7 +77,7 @@ class ImpressionConsumerService:
             await self._handle_impression_batch([entry])
         await msg.ack()
 
-    async def run_once(self, max_messages=1000):
+    async def run_once(self, max_messages=MAX_MESSAGES):
         """Efficiently processes messages in proper batches to minimize network overhead."""
         logger.info("ImpressionConsumerService processing batch")
         batch = []
@@ -95,21 +97,24 @@ class ImpressionConsumerService:
             # Set prefetch to improve throughput
             await self.rabbitmq.channel.set_qos(prefetch_count=max_messages)
 
-            # Batch collect with limited iterator lifetime
-            async with queue.iterator() as queue_iter:
-                async for message in queue_iter:
-                    try:
-                        payload = json.loads(message.body)
-                        if self._is_valid_impression(payload):
-                            batch.append(payload)
-                            messages.append(message)
-                            if len(batch) >= max_messages:
-                                break
-                        else:
+            # Batch collect with graceful timeout handling
+            try:
+                async with queue.iterator(timeout=2.0) as queue_iter:
+                    async for message in queue_iter:
+                        try:
+                            payload = json.loads(message.body)
+                            if self._is_valid_impression(payload):
+                                batch.append(payload)
+                                messages.append(message)
+                                if len(batch) >= max_messages:
+                                    break
+                            else:
+                                await message.ack()
+                        except Exception as e:
+                            logger.exception(f"Message parsing error: {e}")
                             await message.ack()
-                    except Exception as e:
-                        logger.exception(f"Message parsing error: {e}")
-                        await message.ack()
+            except TimeoutError:
+                logger.debug("Queue iterator timed out - this is normal when queue is empty or paused")
 
         if not batch:
             return 0

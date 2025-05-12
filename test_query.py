@@ -4,7 +4,7 @@ from sqlalchemy import select, func, and_, text
 
 from core.logger import logger
 from infrastructure.database import AsyncDatabaseManager
-from models.impression import FinishedImpression as Impression
+from models.impression import Impression as Impression
 
 
 async def test_impression_query():
