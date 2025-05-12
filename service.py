@@ -100,7 +100,7 @@ async def main():
                 if args.once:
                     break
                 logger.info("[SEQUENCE] Sleeping before next cycle")
-                await asyncio.sleep(15)
+                await asyncio.sleep(30)
 
         await sequence_loop()
 

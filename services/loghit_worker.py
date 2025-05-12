@@ -23,7 +23,7 @@ class LoghitWorkerService:
         await rabbitmq_client.connect()
         return cls(redis_client, rabbitmq_client)
 
-    async def start(self, batch_size=BATCH_SIZE, interval_seconds=1, run_once=False):
+    async def start(self, batch_size=BATCH_SIZE, interval_seconds=15, run_once=False):
         logger.info("LoghitWorkerService pre-start.")
         await self.rabbitmq.connect()
         registry = HealthCheckRegistry(
