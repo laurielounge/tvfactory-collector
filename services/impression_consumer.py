@@ -10,14 +10,14 @@ from config.config import settings
 from core.logger import logger
 from infrastructure.circuit_breaker import RedisHealthChecker, RabbitMQHealthChecker, MariaDBHealthChecker, \
     HealthCheckRegistry
-from infrastructure.database import get_db_manager
+from infrastructure.database import AsyncDatabaseManager
 from infrastructure.rabbitmq_client import AsyncRabbitMQClient
 from infrastructure.redis_client import get_redis_client
 from models.impression import Impression
 from utils.ip import format_ipv4_as_mapped_ipv6
 from utils.timer import StepTimer
 
-MAX_MESSAGES = 1000
+MAX_MESSAGES = 2
 
 
 class ImpressionConsumerService:
@@ -37,19 +37,20 @@ class ImpressionConsumerService:
         - dedupe:webhit:{client}:{ip} = delete (reset webhit tracking)
     """
 
-    def __init__(self, redis_client, rabbitmq):
-        self.db = get_db_manager()
+    def __init__(self, db, redis_client, rabbitmq):
+        self.db = db
         self.redis = redis_client
         self.rabbitmq = rabbitmq
-        self.queue_name = "impressions_queue"
+        self.queue_name = "raw_impressions_queue"
         self.timer = StepTimer()
 
     @classmethod
     async def create(cls):
+        db = AsyncDatabaseManager()
         redis_client = await get_redis_client()
         rabbitmq = AsyncRabbitMQClient()
         await rabbitmq.connect()
-        return cls(redis_client, rabbitmq)
+        return cls(db, redis_client, rabbitmq)
 
     async def start(self, run_once=False, max_messages=MAX_MESSAGES):
         logger.info("ImpressionConsumerService started")
@@ -141,17 +142,15 @@ class ImpressionConsumerService:
         return len(batch)
 
     async def _handle_impression_batch(self, entries):
-        """Process impressions with optimal database and Redis operations."""
+        """Process impressions with optimal database, Redis, and message queue operations."""
         values = []
         redis_updates = []
+        publish_payloads = []
 
-        # Prepare data arrays
         for entry in entries:
             q = entry["query"]
             raw_ip = entry.get("client_ip", "").split(",")[0].strip()
-            ip = format_ipv4_as_mapped_ipv6(raw_ip)
-
-            # Simplified timestamp handling
+            ip = format_ipv4_as_mapped_ipv6(raw_ip)  # already properly formatted upstream
             timestmp = datetime.fromisoformat(entry.get("timestamp")) if entry.get("timestamp") else func.now()
 
             client_id = int(q["client"])
@@ -168,18 +167,36 @@ class ImpressionConsumerService:
             })
 
             redis_updates.append((client_id, ip))
+            publish_payloads.append({
+                "timestamp": entry.get("timestamp"),
+                "client_id": client_id,
+                "booking_id": booking_id,
+                "creative_id": creative_id,
+                "ipaddress": ip
+            })
 
-        # Database operation
-        with self.db.session_scope('TVFACTORY') as session:
+        # Insert into database
+        # Insert into database
+        async with self.db.async_session_scope('TVFACTORY') as session:
             stmt = insert(Impression).values(values).returning(Impression.id)
-            results = session.execute(stmt).scalars().all()
+            result = await session.execute(stmt)
+            ids = result.scalars().all()
 
-        # Redis pipeline operation
+        # Update Redis with impression ID for correlation and dedupe
         pipe = self.redis.pipeline()
-        for (client_id, ip), new_id in zip(redis_updates, results):
+        for (client_id, ip), new_id in zip(redis_updates, ids):
             redis_key = f"imp:{client_id}:{ip}"
             dedupe_key = f"dedupe:webhit:{client_id}:{ip}"
             pipe.setex(redis_key, settings.ONE_WEEK, new_id)
             pipe.delete(dedupe_key)
 
         await pipe.execute()
+
+        # Publish impression message to RabbitMQ
+        for msg, impression_id in zip(publish_payloads, ids):
+            msg["id"] = impression_id
+            await self.rabbitmq.publish(
+                exchange="",
+                routing_key="impressions_queue",
+                message=msg
+            )

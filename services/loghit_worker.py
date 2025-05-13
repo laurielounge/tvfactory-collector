@@ -12,6 +12,26 @@ BATCH_SIZE = 5000
 
 
 class LoghitWorkerService:
+    """
+    Processes raw log payloads from Redis and dispatches them to RabbitMQ based on type.
+
+    Responsibilities:
+    - RPOP from Redis list `loghit_queue`
+    - Parse and classify each log entry as either:
+        - impression → publish to `raw_impressions_queue`
+        - webhit     → publish to `raw_webhits_queue`
+    - Drops malformed or unclassifiable entries
+    - Supports batch processing and optional interval looping
+    - Does NOT extract the ipaddress from the log line
+
+    External Systems:
+    - ✅ Reads from Redis (`loghit_queue`)
+    - ✅ Writes to RabbitMQ (`raw_impressions_queue`, `raw_webhits_queue`)
+
+    Downstream:
+    - ImpressionConsumerService and WebhitConsumerService, which consume from those raw queues
+    """
+
     def __init__(self, redis_client, rabbitmq_client):
         self.redis = redis_client
         self.rabbitmq = rabbitmq_client
@@ -59,8 +79,8 @@ class LoghitWorkerService:
 
             category, payload = result
             routing_key = {
-                "impression": "impressions_queue",
-                "webhit": "webhits_queue"
+                "impression": "raw_impressions_queue",
+                "webhit": "raw_webhits_queue"
             }.get(category)
 
             if routing_key:

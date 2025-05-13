@@ -30,6 +30,7 @@ def extract_leading_int(value: str) -> str:
     match = INT_HEAD.match(value)
     return match.group(0) if match else None
 
+
 def parse_query_string(qs: str) -> dict:
     parsed = parse_qs(qs)
     return {k: extract_leading_int(v[0]) for k, v in parsed.items()}
@@ -58,6 +59,22 @@ def classify_entry(entry: dict) -> str | None:
 
 
 def process_log_payload(raw_json: str) -> tuple[str, dict] | None:
+    """
+    Parses and classifies a JSON-wrapped log line.
+
+    Steps:
+    - Decode JSON (should contain keys: host, line_num, raw)
+    - Parse the `raw` field into structured log fields (timestamp, path, query, etc)
+    - Classify based on path + query parameters:
+        - /impression or /viewer → impression
+        - /client or /response   → webhit
+    - Normalize query aliases (e.g., b → booking, r → creative)
+
+    Returns:
+    - (category, structured_entry) if valid
+    - None if the line is malformed or irrelevant
+    """
+
     try:
         payload = json.loads(raw_json)
         entry = parse_log_line(payload["raw"])

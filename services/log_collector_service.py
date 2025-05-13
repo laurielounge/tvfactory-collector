@@ -80,8 +80,21 @@ def process_log_payload(raw_json: str) -> tuple[str, dict] | None:
 
 class LogCollectorService:
     """
-    Asynchronous log collector that fetches logs from remote hosts via SSH,
-    detects log rotations, queues log lines into Redis, and tracks progress state.
+    Fetches log files from remote nginx servers over SSH and pushes them into Redis.
+
+    Responsibilities:
+    - SSH into hosts listed in `HOSTS`
+    - Read lines from /var/log/nginx/shadow_pipeline.log
+    - Detect log rotation via hash comparison of the first line
+    - Maintain per-host progress state in Redis using `logstate:<hostname>`
+    - Push each raw line as JSON payload into Redis list `loghit_queue`
+
+    External Systems:
+    - ✅ Reads from remote filesystem via SSH
+    - ✅ Writes to Redis (`loghit_queue`)
+
+    Downstream:
+    - `LoghitWorkerService` pops from `loghit_queue` and pushes to RabbitMQ
     """
 
     def __init__(self, redis_client: Redis):

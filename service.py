@@ -87,16 +87,16 @@ async def main():
                 logger.info(f"[SEQUENCE] loghit_queue drained — {count} lines processed")
 
                 # Phase 2: Drain impressions_queue
-                logger.info("[SEQUENCE] Draining impressions_queue")
-                while await rabbit.get_queue_length("impressions_queue") > 0:
+                logger.info("[SEQUENCE] Draining raw_impressions_queue")
+                while await rabbit.get_queue_length("raw_impressions_queue") > 0:
                     await imp_service.run_once(max_messages=1000)
-                logger.info("[SEQUENCE] impressions_queue drained")
+                logger.info("[SEQUENCE] raw_impressions_queue drained")
 
                 # Phase 3: Drain webhits_queue
-                logger.info("[SEQUENCE] Draining webhits_queue")
-                while await rabbit.get_queue_length("webhits_queue") > 0:
+                logger.info("[SEQUENCE] Draining raw_webhits_queue")
+                while await rabbit.get_queue_length("raw_webhits_queue") > 0:
                     await webhit_service.run_once(max_messages=1000)
-                logger.info("[SEQUENCE] webhits_queue drained")
+                logger.info("[SEQUENCE] raw_webhits_queue drained")
                 if args.once:
                     break
                 logger.info("[SEQUENCE] Sleeping before next cycle")

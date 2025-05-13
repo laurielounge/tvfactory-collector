@@ -44,7 +44,7 @@ class WebhitConsumerService:
 
         self.db = AsyncDatabaseManager()
         self.rabbitmq = rabbitmq
-        self.queue_name = "webhits_queue"
+        self.queue_name = "raw_webhits_queue"
         self.timer = StepTimer()
         self.redis = redis_client
 
@@ -83,7 +83,7 @@ class WebhitConsumerService:
         batch = []
         messages = []
 
-        # The critical optimization: Retrieve messages in sophisticated bulk
+        # The critical optimisation: Retrieve messages in sophisticated bulk
         with self.timer.time("message_retrieval"):
             # Ensure connection exists
             if not self.rabbitmq.channel:
@@ -251,6 +251,7 @@ class WebhitConsumerService:
         if not impression_id:
             try:
                 with self.timer.time("db_impression_lookup"):
+
                     result = await db.execute(
                         select(Impression.id).where(
                             and_(
@@ -308,18 +309,39 @@ class WebhitConsumerService:
         logger.debug("[PROCESS SINGLE] Inserting new webhit")
         with self.timer.time("insertion"):
             try:
-                await db.execute(
+                result = await db.execute(
                     insert(WebHit).values(
                         impression_id=impression_id,
                         client_id=client_id,
                         site_id=site_id,
                         ipaddress=ip,
                         timestmp=timestmp,
-                    )
+                    ).returning(WebHit.id)
                 )
+                webhit_id = result.scalar_one()
                 await db.commit()
+
+                # Publish to RabbitMQ
+                payload = {
+                    "id": webhit_id,
+                    "impression_id": impression_id,
+                    "client_id": client_id,
+                    "site_id": site_id,
+                    "ipaddress": ip,
+                    "timestamp": timestmp.isoformat() if isinstance(timestmp, datetime) else str(timestmp),
+                }
+
+                await self.rabbitmq.publish(
+                    exchange="",
+                    routing_key="webhits_queue",
+                    message=payload
+                )
+
             except Exception as e:
                 logger.warning(f"[INSERT ERROR] {e}")
+                return
+
+            # Redis deduplication update
             pipe = self.redis.pipeline()
             pipe.sadd(dedupe_key, site_id)
             pipe.expire(dedupe_key, settings.ONE_DAY)
