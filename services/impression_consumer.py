@@ -3,7 +3,7 @@
 import asyncio
 import json
 from datetime import datetime
-
+import ipaddress
 from sqlalchemy import insert, func
 
 from config.config import settings
@@ -17,7 +17,7 @@ from models.impression import Impression
 from utils.ip import format_ipv4_as_mapped_ipv6
 from utils.timer import StepTimer
 
-MAX_MESSAGES = 2
+MAX_MESSAGES = 5000
 
 
 class ImpressionConsumerService:
@@ -150,7 +150,14 @@ class ImpressionConsumerService:
         for entry in entries:
             q = entry["query"]
             raw_ip = entry.get("client_ip", "").split(",")[0].strip()
-            ip = format_ipv4_as_mapped_ipv6(raw_ip)  # already properly formatted upstream
+
+            try:
+                ipaddress.ip_address(raw_ip)
+                ip = format_ipv4_as_mapped_ipv6(raw_ip)
+            except ValueError:
+                logger.warning(f"[SKIP] Invalid IP: {raw_ip}")
+                continue
+
             timestmp = datetime.fromisoformat(entry.get("timestamp")) if entry.get("timestamp") else func.now()
 
             client_id = int(q["client"])

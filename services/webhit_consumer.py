@@ -143,13 +143,21 @@ class WebhitConsumerService:
             q = entry["query"]
             logger.debug(f"Processing webhit q: {q}")
             raw_ip = entry.get("client_ip", "").split(",")[0].strip()
-            ip = format_ipv4_as_mapped_ipv6(raw_ip)
+
+            try:
+                ip = format_ipv4_as_mapped_ipv6(raw_ip)
+            except ValueError:
+                logger.warning(f"[SKIP] Invalid IP address: {raw_ip}")
+                await msg.ack()  # ✅ Acknowledge to prevent reprocessing
+                return
+
             client_id = int(q["client"])
             site_id = extract_leading_int(q["site"])
             logger.debug(f"[PROCESS MESSAGE] Processing webhit {site_id=} {client_id=} {ip=}")
             if site_id is None:
                 logger.warning(f"Invalid site ID: {q['site']} — skipping")
                 logger.warning(f"Query string was {q}")
+                await msg.ack()  # ✅ Don't requeue
                 return
 
             try:
