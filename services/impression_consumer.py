@@ -199,11 +199,11 @@ class ImpressionConsumerService:
 
         await pipe.execute()
 
-        # Publish impression message to RabbitMQ
+        # Publish resolved impression message to RabbitMQ
         for msg, impression_id in zip(publish_payloads, ids):
             msg["id"] = impression_id
             await self.rabbitmq.publish(
                 exchange="",
-                routing_key="impressions_queue",
+                routing_key="resolved_impressions_queue",
                 message=msg
             )

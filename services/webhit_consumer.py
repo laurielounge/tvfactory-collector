@@ -341,7 +341,7 @@ class WebhitConsumerService:
 
                 await self.rabbitmq.publish(
                     exchange="",
-                    routing_key="webhits_queue",
+                    routing_key="resolved_webhits_queue",
                     message=payload
                 )
 
