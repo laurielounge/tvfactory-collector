@@ -1,16 +1,5 @@
-Of course — below is a full `README.md` tailored to your project, complete with a Mermaid diagram to illustrate the
-elegant service-to-queue choreography.
-
----
-
-````markdown
-# TVFactory Collector Pipeline
-
-This project forms the backend pipeline for collecting, classifying, resolving, and enriching log-derived traffic data —
-particularly impressions and webhits — from bare-metal nginx servers. It transforms raw log entries into enriched
-geographic and temporal data for downstream analytics.
-
----
+```markdown
+# Infinitum Collector Service - README
 
 ## 📡 IP Addresses
 
@@ -35,141 +24,108 @@ geographic and temporal data for downstream analytics.
 | tvbvodsite4               | 172.105.187.245  |
 | redis-processor           | 172.105.176.221  |
 
-## 💡 Overview
 
-This pipeline operates in discrete stages:
+## Overview
 
-1. **Log Collection**  
-   Logs are scraped from remote nginx hosts via SSH.
-2. **Log Classification**  
-   Log lines are parsed and classified into impressions or webhits.
-3. **Message Queuing**  
-   Classifications are pushed into RabbitMQ (`raw_*_queue`).
-4. **Validation + Staging**  
-   Consumer services validate and insert into MariaDB (assigning `id`s).
-5. **Enrichment**  
-   Another service enriches the DB records with geolocation and region intelligence using Redis + IP APIs.
-6. **Resolved output** is emitted back into RabbitMQ (`resolved_*_queue`).
+The Collector Service sits at the beginning of the Infinitum data pipeline, elegantly intercepting advertising impression events and website visits. One might call it the reconnaissance phase of our operation, Steed. 
 
----
+## Service Components
 
-## 🔁 Data Flow Diagram (Mermaid)
+### LogCollectorService
+This component retrieves logs with a deft touch:
+- Performs SSH connections to edge servers (via port 822)
+- Extracts log entries from `/var/log/nginx/shadow_pipeline.log`
+- Detects log rotation through hash comparisons
+- Maintains progress state in Redis (`logstate:<hostname>`)
+- Pushes raw log entries to Redis list (`loghit_queue`)
 
+### LoghitWorkerService
+Efficiently processes logs with minimal fuss:
+- Consumes entries from Redis `loghit_queue`
+- Classifies each entry as either "impression" or "webhit"
+- Routes entries to appropriate RabbitMQ queues
+- Handles batch processing for optimal throughput
+
+### ImpressionConsumerService
+Processes advertising impressions with sophisticated precision:
+- Consumes messages from `raw_impressions_queue`
+- Validates impression data (client, booking, creative)
+- Normalizes IP addresses
+- Inserts records into TVFACTORY database
+- Creates correlation keys in Redis (`imp:{client}:{ip}`)
+- Publishes processed impressions to `resolved_impressions_queue`
+
+### WebhitConsumerService
+Handles website visits with refined correlation capabilities:
+- Consumes messages from `raw_webhits_queue`
+- Correlates visits with impressions using Redis or database lookups
+- Prevents duplicate processing through Redis deduplication
+- Inserts validated records into TVFACTORY database
+- Publishes processed webhits to `resolved_webhits_queue`
+
+## Data Flow
+```
 ```mermaid
 flowchart TD
-    subgraph Collect [Collector Stage]
-        A[nginx Log Files] --> B[LogCollectorService]
-        B -->|LPUSH| C[Redis loghit_queue]
-    end
+    classDef edge fill:#aed6f1,stroke:#333,stroke-width:1px
+    classDef redis fill:#f9e79f,stroke:#333,stroke-width:1px
+    classDef rabbit fill:#d7bde2,stroke:#333,stroke-width:1px
+    classDef process fill:#a9dfbf,stroke:#333,stroke-width:1px
+    classDef database fill:#f5b7b1,stroke:#333,stroke-width:1px
 
-    subgraph Classify [Classifier Stage]
-        C --> D[LoghitWorkerService]
-        D -->|Publish| E[raw_impressions_queue]
-        D -->|Publish| F[raw_webhits_queue]
-    end
+    Logs["Nginx Logs"]:::edge
+    LogCollector["LogCollectorService"]:::process
+    LogQueue["Redis: loghit_queue"]:::redis
+    LoghitWorker["LoghitWorkerService"]:::process
+    RawImpQueue["RabbitMQ: raw_impressions_queue"]:::rabbit
+    RawWebQueue["RabbitMQ: raw_webhits_queue"]:::rabbit
+    ImpConsumer["ImpressionConsumerService"]:::process
+    WebConsumer["WebhitConsumerService"]:::process
+    Redis["Redis Correlation Keys"]:::redis
+    DB["TVFACTORY Database"]:::database
+    ResolvedImpQueue["RabbitMQ: resolved_impressions_queue"]:::rabbit
+    ResolvedWebQueue["RabbitMQ: resolved_webhits_queue"]:::rabbit
 
-    subgraph Validate [Database Insertion Stage]
-        E --> G[ImpressionConsumerService]
-        F --> H[WebhitConsumerService]
-        G -->|Insert + Publish| I[impressions_queue]
-        H -->|Insert + Publish| J[webhits_queue]
-    end
-
-    subgraph Enrich [IP Resolver Stage]
-        I --> K[ProcessingService]
-        J --> K
-        K -->|Geo resolve + Region| L[resolved_impressions_queue]
-        K -->|Geo resolve + Region| M[resolved_webhits_queue]
-    end
-````
-
----
-
-## 🚀 Services
-
-| Service                     | Role                                  | Input                                | Output                                                  |
-|-----------------------------|---------------------------------------|--------------------------------------|---------------------------------------------------------|
-| `LogCollectorService`       | Scrapes log files from nginx servers  | SSH                                  | `loghit_queue` (Redis)                                  |
-| `LoghitWorkerService`       | Parses and classifies logs            | `loghit_queue` (Redis)               | `raw_impressions_queue`, `raw_webhits_queue` (RabbitMQ) |
-| `ImpressionConsumerService` | Validates and stores impressions      | `raw_impressions_queue` (RabbitMQ)   | `impressions_queue`                                     |
-| `WebhitConsumerService`     | Validates and stores webhits          | `raw_webhits_queue` (RabbitMQ)       | `webhits_queue`                                         |
-| `ProcessingService`         | Resolves IPs and attaches region info | `impressions_queue`, `webhits_queue` | `resolved_*_queue`                                      |
-
----
-
-## 🗃️ Queues
-
-| Queue                        | Type     | Description                         |
-|------------------------------|----------|-------------------------------------|
-| `loghit_queue`               | Redis    | Raw logs queued from SSH            |
-| `raw_impressions_queue`      | RabbitMQ | Classified, unvalidated impressions |
-| `raw_webhits_queue`          | RabbitMQ | Classified, unvalidated webhits     |
-| `impressions_queue`          | RabbitMQ | DB-backed impressions with IDs      |
-| `webhits_queue`              | RabbitMQ | DB-backed webhits with IDs          |
-| `resolved_impressions_queue` | RabbitMQ | Fully enriched impressions          |
-| `resolved_webhits_queue`     | RabbitMQ | Fully enriched webhits              |
-
----
-
-## ⚙️ Running a Role
-
-Each service is launched with:
-
-```bash
-python service.py --role=collector
+    Logs -->|SSH fetch| LogCollector
+    LogCollector -->|Push| LogQueue
+    LogQueue -->|Pop & classify| LoghitWorker
+    LoghitWorker -->|Impressions| RawImpQueue
+    LoghitWorker -->|Webhits| RawWebQueue
+    RawImpQueue -->|Consume| ImpConsumer
+    RawWebQueue -->|Consume| WebConsumer
+    ImpConsumer -->|Store impressions| DB
+    ImpConsumer -->|Set correlation keys| Redis
+    ImpConsumer -->|Publish processed| ResolvedImpQueue
+    WebConsumer -->|Lookup impressions| Redis
+    WebConsumer -.->|Fallback lookup| DB
+    WebConsumer -->|Store webhits| DB
+    WebConsumer -->|Publish processed| ResolvedWebQueue
 ```
+```markdown
+## Execution Modes
 
-Valid roles:
+The service has multiple operating roles:
+- `collector`: Runs log fetching from nginx servers
+- `loghit`: Processes Redis queue entries into RabbitMQ
+- `impression`: Processes impression events from RabbitMQ
+- `webhit`: Processes website visit events from RabbitMQ
+- `sequence`: Runs the complete chain (loghit → impression → webhit)
 
-* `collector`
-* `loghit`
-* `impression`
-* `webhit`
-* `sequence` (runs all three in sequence: loghit → impression → webhit)
+## Design Assessment
 
----
+The collector service demonstrates an elegant approach to data acquisition and initial processing:
 
-## 📌 Requirements
+**Strengths:**
+- Clean separation of concerns between components
+- Intelligent use of Redis for state tracking and correlation
+- Efficient batch processing with appropriate timeouts
+- Sophisticated error handling and health checks
+- Graceful handling of log rotation
 
-* Redis (for queueing and caching)
-* RabbitMQ (for pub/sub message flow)
-* MariaDB (for persistence)
-* IP geolocation API (used in `ProcessingService`)
-* `ssh` access to nginx boxes
+**Points of Refinement:**
+- The SSH command execution appears blocking rather than asynchronous
+- Some direct coupling between components that could use further abstraction
+- Potentially excessive Redis key usage for high-volume traffic
 
----
-
-## 🧪 Development Setup
-
-1. Populate queues:
-
-   ```bash
-   rabbitmqadmin -u tvadmin -p secret -V /tvtag declare queue name=raw_impressions_queue durable=true
-   ```
-
-2. Drain a queue manually (for test):
-
-   ```bash
-   redis-cli RPOP loghit_queue
-   ```
-
----
-
-## 📎 Notes
-
-* Queue names are hardcoded in some places. To change them, edit `LOG_QUEUE`, `raw_*_queue`, etc. in respective
-  services.
-* Use the `--once` flag to run a service in "batch and exit" mode for testing.
-
----
-
-## 🕵️ Authored by Emma Peel
-
-Exquisite pipelines for auditable traffic — shaken, not stirred.
-
-```
-
----
-
-Would you like this written to a file and returned to you directly?
+Overall, the design shows a thoughtful balance between performance and reliability, capturing the essence of an effective ETL pipeline's first stage.
 ```
