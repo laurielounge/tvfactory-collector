@@ -2,7 +2,7 @@
 
 import redis.asyncio as redis
 
-from config.config import settings
+from config import settings
 from core.logger import logger
 
 _client = None
@@ -16,7 +16,10 @@ async def get_redis_client():
     """
     global _client
     if _client is None:
+        logger.info(
+            f"Redis settings: {settings.REDIS_HOST}:{settings.REDIS_PORT}, password: {settings.REDIS_PASSWORD}, timeout: {settings.REDIS_TIMEOUT}")
         try:
+
             _client = redis.Redis(
                 host=settings.REDIS_HOST,
                 port=int(settings.REDIS_PORT),
@@ -27,7 +30,7 @@ async def get_redis_client():
                 socket_keepalive=True,
                 health_check_interval=15,
             )
-            logger.debug("Async Redis client initialized")
+            logger.info("Async Redis client initialized")
         except Exception as e:
             logger.error(f"Error creating async Redis connection: {e}")
             return None

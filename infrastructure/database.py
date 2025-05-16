@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, AsyncEngine
 from sqlalchemy.orm import scoped_session, sessionmaker
 
-from config.config import settings
+from config import settings
 from core.logger import logger
 from utils.yaml_utils import load_configuration
 
@@ -104,6 +104,7 @@ class AsyncDatabaseManager:
         self.engines: Dict[str, AsyncEngine] = {}
         self._init_lock = asyncio.Lock()
         self._initialized = False
+        self._engine: Optional[AsyncEngine] = None
 
     async def initialize(self):
         """Initialize database connections if not already done"""
@@ -114,7 +115,7 @@ class AsyncDatabaseManager:
             try:
                 # Initialize the standard connections we'll use
                 await self._create_engine('TVFACTORY',
-                                          settings.TVFACTORY_CONNECTION_STRING.replace('mysql://', 'mysql+aiomysql://'))
+                                          settings.MARIADB_DSN)
 
                 self._initialized = True
                 logger.info("AsyncDatabaseManager initialized successfully")
@@ -129,8 +130,9 @@ class AsyncDatabaseManager:
                 connection_string,
                 pool_pre_ping=True,
                 pool_recycle=3600,
-                pool_size=10,
-                max_overflow=5,
+                pool_size=50,
+                max_overflow=20,
+                future=True,
                 echo=settings.SQL_ECHO
             )
             self.engines[db_key] = engine
@@ -197,3 +199,8 @@ class AsyncDatabaseManager:
 
         self._initialized = False
         logger.info("AsyncDatabaseManager connections closed")
+
+    async def shutdown(self):
+        if self._engine:
+            await self._engine.dispose()
+            self._engine = None  # Helps GC

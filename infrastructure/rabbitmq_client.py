@@ -1,10 +1,13 @@
 # infrastructure/rabbitmq_client.py
 import asyncio
+import json
+from datetime import datetime
+from json import JSONEncoder
 from typing import Callable, Any, Optional
 
 import aio_pika
 
-from config.config import settings
+from config import settings
 from core.logger import logger
 
 
@@ -72,65 +75,12 @@ class AsyncRabbitMQClient:
         """Begin consumption from specified queue with callback processing."""
         if not self.channel:
             await self.connect()
-
+        logger.debug(f"[CONSUME] Connected: {not self.channel.is_closed} | Queue: {queue_name}")
         queue = await self.channel.declare_queue(queue_name, durable=True)
         consumer_tag = await queue.consume(callback)
         self._consumers[queue_name] = consumer_tag
 
         logger.debug(f"Started consuming from {queue_name}")
-
-    async def publish(self, exchange: str, routing_key: str, message: Any) -> None:
-        """Publish message with sophisticated error handling."""
-        if not self.channel:
-            await self.connect()
-
-        try:
-            # Convert dict to JSON string if necessary
-            if isinstance(message, dict):
-                import json
-                message = json.dumps(message)
-
-            # Ensure message is bytes
-            if isinstance(message, str):
-                message = message.encode()
-
-            # Create message with persistence
-            message_obj = aio_pika.Message(
-                body=message,
-                delivery_mode=aio_pika.DeliveryMode.PERSISTENT
-            )
-
-            # Get the exchange (empty string for default)
-            target_exchange = self.channel.default_exchange if not exchange else \
-                await self.channel.declare_exchange(exchange, aio_pika.ExchangeType.DIRECT)
-
-            # Publish with confirmation
-            await target_exchange.publish(
-                message_obj,
-                routing_key=routing_key
-            )
-        except Exception as e:
-            logger.error(f"Failed to publish message: {e}")
-            raise
-
-    async def get_message(self, queue_name: str):
-        """Retrieves a single message with understated efficiency."""
-        if not self.channel:
-            await self.connect()
-
-        # Declare the queue passively - confirm existence without creation
-        queue = await self.channel.declare_queue(
-            queue_name,
-            passive=True  # Don't create, merely verify
-        )
-
-        # Get a single message, if available
-        async with queue.iterator(timeout=0.1) as queue_iter:
-            async for message in queue_iter:
-                return message  # Return just the first message
-
-        # Queue was empty - return with dignified silence
-        return None
 
     async def get_batch(self, queue_name: str, batch_size: int = 500) -> list:
         """
@@ -191,6 +141,65 @@ class AsyncRabbitMQClient:
         except Exception as e:
             logger.error(f"Failed to get batch from {queue_name}: {e}")
             return []
+
+    async def publish(self, exchange: str, routing_key: str, message: Any) -> None:
+        """Publish message with sophisticated error handling."""
+
+        class EnhancedJSONEncoder(JSONEncoder):
+            def default(self, obj):
+                if isinstance(obj, datetime):
+                    return obj.isoformat()
+                return super().default(obj)
+
+        if not self.channel:
+            await self.connect()
+
+        try:
+            # Convert dict to JSON string if necessary
+            if isinstance(message, dict):
+                message = json.dumps(message, cls=EnhancedJSONEncoder)
+
+            # Ensure message is bytes
+            if isinstance(message, str):
+                message = message.encode()
+
+            # Create message with persistence
+            message_obj = aio_pika.Message(
+                body=message,
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT
+            )
+
+            # Get the exchange (empty string for default)
+            target_exchange = self.channel.default_exchange if not exchange else \
+                await self.channel.declare_exchange(exchange, aio_pika.ExchangeType.DIRECT)
+
+            # Publish with confirmation
+            await target_exchange.publish(
+                message_obj,
+                routing_key=routing_key
+            )
+        except Exception as e:
+            logger.error(f"Failed to publish message: {e}")
+            raise
+
+    async def get_message(self, queue_name: str):
+        """Retrieves a single message with understated efficiency."""
+        if not self.channel:
+            await self.connect()
+
+        # Declare the queue passively - confirm existence without creation
+        queue = await self.channel.declare_queue(
+            queue_name,
+            passive=True  # Don't create, merely verify
+        )
+
+        # Get a single message, if available
+        async with queue.iterator(timeout=0.1) as queue_iter:
+            async for message in queue_iter:
+                return message  # Return just the first message
+
+        # Queue was empty - return with dignified silence
+        return None
 
     async def get_queue_length(self, queue_name: str) -> int:
         """Retrieve message count from a queue."""
