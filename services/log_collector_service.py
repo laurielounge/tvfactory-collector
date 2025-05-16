@@ -5,12 +5,12 @@ import json
 import subprocess
 from urllib.parse import urlparse, parse_qs
 
-from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from core.logger import logger
 from infrastructure.circuit_breaker import RedisHealthChecker, HealthCheckRegistry
 from infrastructure.redis_client import get_redis_client
+from utils.async_factory import BaseAsyncFactory
 from utils.timer import StepTimer
 
 LOG_QUEUE = "loghit_queue"
@@ -78,7 +78,7 @@ def process_log_payload(raw_json: str) -> tuple[str, dict] | None:
 
 # --- Collector Service Class ---
 
-class LogCollectorService:
+class LogCollectorService(BaseAsyncFactory):
     """
     Fetches log files from remote nginx servers over SSH and pushes them into Redis.
 
@@ -97,15 +97,13 @@ class LogCollectorService:
     - `LoghitWorkerService` pops from `loghit_queue` and pushes to RabbitMQ
     """
 
-    def __init__(self, redis_client: Redis):
+    def __init__(self):
         logger.info("Init log collector service")
         self.timer = StepTimer()
-        self.redis = redis_client
+        self.redis = None
 
-    @classmethod
-    async def create(cls):
-        redis_client = await get_redis_client()
-        return cls(redis_client)
+    async def async_setup(self):
+        self.redis = get_redis_client()
 
     async def start(self, interval_seconds: int = 300, run_once=False):
         logger.info("LogCollectorService pre-start.")

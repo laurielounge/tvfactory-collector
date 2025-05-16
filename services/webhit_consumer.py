@@ -16,6 +16,7 @@ from infrastructure.rabbitmq_client import AsyncRabbitMQClient
 from infrastructure.redis_client import get_redis_client
 from models.impression import Impression, FinishedImpression
 from models.webhit import WebHit
+from utils.async_factory import BaseAsyncFactory
 from utils.ip import format_ipv4_as_mapped_ipv6
 from utils.timer import StepTimer
 
@@ -28,7 +29,7 @@ def extract_leading_int(value: str) -> int | None:
     return int(match.group(0)) if match else None
 
 
-class WebhitConsumerService:
+class WebhitConsumerService(BaseAsyncFactory):
     """
     Consumes webhit messages from RabbitMQ, checks against Redis for a matching impression,
     deduplicates by site, and inserts into the database if valid.
@@ -42,18 +43,18 @@ class WebhitConsumerService:
 
     def __init__(self, redis_client, rabbitmq):
 
-        self.db = AsyncDatabaseManager()
-        self.rabbitmq = rabbitmq
+        self.db = None
+        self.rabbitmq = None
+        self.redis = None
         self.queue_name = "raw_webhits_queue"
         self.timer = StepTimer()
-        self.redis = redis_client
 
-    @classmethod
-    async def create(cls):
-        redis_client = await get_redis_client()
-        rabbitmq = AsyncRabbitMQClient()
-        await rabbitmq.connect()
-        return cls(redis_client, rabbitmq)
+    async def async_setup(self):
+        self.db = AsyncDatabaseManager()
+        await self.db.initialize()
+        self.rabbitmq = AsyncRabbitMQClient()
+        await self.rabbitmq.connect()
+        self.redis = await get_redis_client()
 
     async def start(self, run_once=True, max_messages=MAX_MESSAGES):
         logger.info("WebhitConsumerService started")

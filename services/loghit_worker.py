@@ -6,12 +6,13 @@ from infrastructure.circuit_breaker import RedisHealthChecker, RabbitMQHealthChe
 from infrastructure.rabbitmq_client import AsyncRabbitMQClient
 from infrastructure.redis_client import get_redis_client
 from services.loghit_processor import process_log_payload
+from utils.async_factory import BaseAsyncFactory
 
 LOG_QUEUE = "loghit_queue"
 BATCH_SIZE = 5000
 
 
-class LoghitWorkerService:
+class LoghitWorkerService(BaseAsyncFactory):
     """
     Processes raw log payloads from Redis and dispatches them to RabbitMQ based on type.
 
@@ -33,15 +34,13 @@ class LoghitWorkerService:
     """
 
     def __init__(self, redis_client, rabbitmq_client):
-        self.redis = redis_client
-        self.rabbitmq = rabbitmq_client
+        self.redis = None
+        self.rabbitmq = None
 
-    @classmethod
-    async def create(cls):
-        redis_client = await get_redis_client()
-        rabbitmq_client = AsyncRabbitMQClient()
-        await rabbitmq_client.connect()
-        return cls(redis_client, rabbitmq_client)
+    async def async_setup(self):
+        self.redis = await get_redis_client()
+        self.rabbitmq = AsyncRabbitMQClient()
+        await self.rabbitmq.connect()
 
     async def start(self, batch_size=BATCH_SIZE, interval_seconds=15, run_once=False):
         logger.info("LoghitWorkerService pre-start.")

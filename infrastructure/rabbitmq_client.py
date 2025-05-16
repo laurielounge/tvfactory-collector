@@ -132,6 +132,66 @@ class AsyncRabbitMQClient:
         # Queue was empty - return with dignified silence
         return None
 
+    async def get_batch(self, queue_name: str, batch_size: int = 500) -> list:
+        """
+        Retrieves a batch of messages with sophisticated error handling.
+
+        Args:
+            queue_name: The queue to retrieve messages from
+            batch_size: Maximum number of messages to retrieve
+
+        Returns:
+            List of messages, empty if none available
+        """
+        if not self.channel:
+            await self.connect()
+
+        messages = []
+
+        try:
+            # Declare the queue passively - confirm existence without creation
+            queue = await self.channel.declare_queue(
+                queue_name,
+                durable=True
+            )
+
+            # Set prefetch for optimal throughput
+            await self.channel.set_qos(prefetch_count=batch_size)
+
+            # Efficient batch retrieval with timeout
+            try:
+                async with queue.iterator(timeout=1.0) as queue_iter:
+                    for _ in range(batch_size):
+                        try:
+                            # Use a small timeout to avoid blocking too long
+                            message = await asyncio.wait_for(queue_iter.__anext__(), timeout=0.05)
+                            messages.append(message)
+
+                            # Log batch progress with aristocratic restraint
+                            if len(messages) % 100 == 0:
+                                logger.debug(f"Retrieved {len(messages)} messages from {queue_name}")
+
+                        except (asyncio.TimeoutError, StopAsyncIteration):
+                            # No more messages available - conclude with composure
+                            break
+                        except Exception as e:
+                            logger.error(f"Error retrieving message from {queue_name}: {e}")
+                            break
+            except Exception as e:
+                logger.error(f"Error iterating queue {queue_name}: {e}")
+
+            # Log batch retrieval results
+            if messages:
+                logger.info(f"Retrieved batch of {len(messages)} messages from {queue_name}")
+            elif batch_size > 0:
+                logger.debug(f"No messages available from {queue_name}")
+
+            return messages
+
+        except Exception as e:
+            logger.error(f"Failed to get batch from {queue_name}: {e}")
+            return []
+
     async def get_queue_length(self, queue_name: str) -> int:
         """Retrieve message count from a queue."""
         if not self.channel:

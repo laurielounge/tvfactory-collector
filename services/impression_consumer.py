@@ -1,9 +1,10 @@
 # services/impression_consumer.py
 
 import asyncio
+import ipaddress
 import json
 from datetime import datetime
-import ipaddress
+
 from sqlalchemy import insert, func
 
 from config.config import settings
@@ -14,13 +15,14 @@ from infrastructure.database import AsyncDatabaseManager
 from infrastructure.rabbitmq_client import AsyncRabbitMQClient
 from infrastructure.redis_client import get_redis_client
 from models.impression import Impression
+from utils.async_factory import BaseAsyncFactory
 from utils.ip import format_ipv4_as_mapped_ipv6
 from utils.timer import StepTimer
 
 MAX_MESSAGES = 5000
 
 
-class ImpressionConsumerService:
+class ImpressionConsumerService(BaseAsyncFactory):
     """
     Consumes impression messages from RabbitMQ and inserts them into the database.
 
@@ -37,20 +39,19 @@ class ImpressionConsumerService:
         - dedupe:webhit:{client}:{ip} = delete (reset webhit tracking)
     """
 
-    def __init__(self, db, redis_client, rabbitmq):
-        self.db = db
-        self.redis = redis_client
-        self.rabbitmq = rabbitmq
+    def __init__(self):
+        self.db = None
+        self.redis = None
+        self.rabbitmq = None
         self.queue_name = "raw_impressions_queue"
         self.timer = StepTimer()
 
-    @classmethod
-    async def create(cls):
-        db = AsyncDatabaseManager()
-        redis_client = await get_redis_client()
-        rabbitmq = AsyncRabbitMQClient()
-        await rabbitmq.connect()
-        return cls(db, redis_client, rabbitmq)
+    async def async_setup(self):
+        self.db = AsyncDatabaseManager()
+        await self.db.initialize()
+        self.rabbitmq = AsyncRabbitMQClient()
+        await self.rabbitmq.connect()
+        self.redis = await get_redis_client()
 
     async def start(self, run_once=False, max_messages=MAX_MESSAGES):
         logger.info("ImpressionConsumerService started")
