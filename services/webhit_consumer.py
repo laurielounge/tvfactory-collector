@@ -9,14 +9,9 @@ from sqlalchemy import func, select, and_, insert
 
 from config.config import settings
 from core.logger import logger
-from infrastructure.circuit_breaker import RedisHealthChecker, RabbitMQHealthChecker, MariaDBHealthChecker, \
-    HealthCheckRegistry
-from infrastructure.database import AsyncDatabaseManager
-from infrastructure.rabbitmq_client import AsyncRabbitMQClient
-from infrastructure.redis_client import get_redis_client
+from infrastructure.async_factory import BaseAsyncFactory
 from models.impression import Impression, FinishedImpression
 from models.webhit import WebHit
-from utils.async_factory import BaseAsyncFactory
 from utils.ip import format_ipv4_as_mapped_ipv6
 from utils.timer import StepTimer
 
@@ -41,73 +36,66 @@ class WebhitConsumerService(BaseAsyncFactory):
     - If not a duplicate, inserts a new WebHit.
     """
 
-    def __init__(self, redis_client, rabbitmq):
-
-        self.db = None
-        self.rabbitmq = None
-        self.redis = None
+    def __init__(self, run_once=False):
+        super().__init__(require_redis=True, require_db=True, require_rabbit=True)
         self.queue_name = "raw_webhits_queue"
         self.timer = StepTimer()
+        self.run_once = run_once
+        logger.info("WebhitConsumerService initialized")
 
-    async def async_setup(self):
-        self.db = AsyncDatabaseManager()
-        await self.db.initialize()
-        self.rabbitmq = AsyncRabbitMQClient()
-        await self.rabbitmq.connect()
-        self.redis = await get_redis_client()
+    async def service_setup(self):
+        """Service-specific setup after connections established."""
+        if self.rabbit:
+            # Ensure our queues exist
+            await self.rabbit.declare_queue(self.queue_name, durable=True)
+            await self.rabbit.declare_queue("resolved_webhits_queue", durable=True)
+        logger.info("WebhitConsumerService setup complete")
 
-    async def start(self, run_once=True, max_messages=MAX_MESSAGES):
-        logger.info("WebhitConsumerService started")
-        await self.db.initialize()
-        await self.rabbitmq.connect()
-        registry = HealthCheckRegistry(
-            RedisHealthChecker(self.redis),
-            RabbitMQHealthChecker(self.rabbitmq),
-            MariaDBHealthChecker(self.db)
-        )
+    async def process_batch(self, batch_size=MAX_MESSAGES, timeout=30.0):
+        """
+        Processes a batch of webhit messages with sophisticated optimization.
 
-        await registry.assert_healthy_or_exit()
-        try:
-            if run_once:
-                await self.run_once(max_messages=max_messages)
-            else:
-                await self.rabbitmq.consume(self.queue_name, self.process_message)
-                return await asyncio.Future()
-        finally:
-            await self.db.close()
-            await self.rabbitmq.close()
-            logger.info("Connections closed")
+        Args:
+            batch_size: Maximum number of messages to process
+            timeout: Maximum time to spend processing in seconds
 
-    async def run_once(self, max_messages=MAX_MESSAGES):
-        """Processes webhit messages with significantly improved network efficiency."""
-        logger.info("WebhitConsumerService batch processing initiated")
+        Returns:
+            int: Number of messages processed
+        """
+        logger.info(f"Processing batch of webhit messages (max size: {batch_size})")
         batch = []
         messages = []
+        start_time = asyncio.get_event_loop().time()
 
-        # The critical optimisation: Retrieve messages in sophisticated bulk
+        # The critical optimization: retrieve messages in bulk
         with self.timer.time("message_retrieval"):
-            # Ensure connection exists
-            if not self.rabbitmq.channel:
-                await self.rabbitmq.connect()
+            # Create connection and channel if needed
+            if not self.rabbit.channel:
+                await self.rabbit.connect()
 
-            # Get queue reference once, not repeatedly
-            queue = await self.rabbitmq.channel.declare_queue(
+            # Get queue reference once
+            queue = await self.rabbit.channel.declare_queue(
                 self.queue_name, passive=True, durable=True
             )
 
-            # Set prefetch for optimal throughput
-            await self.rabbitmq.channel.set_qos(prefetch_count=max_messages)
+            # Set prefetch to improve throughput
+            await self.rabbit.channel.set_qos(prefetch_count=batch_size)
 
-            # Efficient message collection with timeout
+            # Batch collect with graceful timeout handling
             try:
                 async with queue.iterator(timeout=2.0) as queue_iter:
                     async for message in queue_iter:
                         try:
+                            # Check time limit
+                            if asyncio.get_event_loop().time() - start_time > timeout:
+                                logger.warning(f"Batch processing timeout reached after {len(batch)} messages")
+                                break
+
                             payload = json.loads(message.body)
                             if self._is_valid_webhit(payload):
                                 batch.append(payload)
                                 messages.append(message)
-                                if len(batch) >= max_messages:
+                                if len(batch) >= batch_size:
                                     break
                             else:
                                 await message.ack()
@@ -117,24 +105,54 @@ class WebhitConsumerService(BaseAsyncFactory):
             except TimeoutError:
                 logger.debug("Queue iterator timed out - this is normal when queue is empty or paused")
 
-        if batch:
-            # Process the batch with appropriate timing
-            with self.timer.time("processing"):
-                await self._handle_webhit_batch(batch)
+        if not batch:
+            return 0
+
+        # Process the collected batch
+        with self.timer.time("processing"):
+            await self._handle_webhit_batch(batch)
 
         # Acknowledge all messages after successful processing
         with self.timer.time("acknowledgment"):
             for msg in messages:
                 await msg.ack()
 
-        count = len(batch)
-        logger.info(f"Processed {count} webhit messages")
-        return count
+        logger.info(f"Processed {len(batch)} webhit messages")
+        return len(batch)
+
+    # Override _processing_loop to implement run_once behavior
+    async def _processing_loop(self, interval_seconds):
+        """Processing loop with optional run-once behavior"""
+        while self._running:
+            try:
+                # Check health with backoff
+                if not await self._registry.check_with_backoff():
+                    logger.warning("Health check failed - waiting before retry")
+                    await asyncio.sleep(interval_seconds)
+                    continue
+
+                # Process a batch
+                count = await self.process_batch()
+
+                # If run_once is set and we've processed items, exit the loop
+                if self.run_once and count > 0:
+                    logger.info("Run-once mode: exiting after successful batch")
+                    break
+
+                # Sleep if no messages or between batches
+                await asyncio.sleep(interval_seconds if count == 0 else 0.1)
+
+            except asyncio.CancelledError:
+                logger.info(f"{self.__class__.__name__} processing loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in processing loop: {e}")
+                await asyncio.sleep(interval_seconds)
 
     async def process_message(self, msg):
         """
-        Continuous consumption handler with appropriate elegance.
-        Processes incoming webhits with singular focus.
+        Continuous consumption handler for individual messages.
+        Used when the service is in consumer mode rather than batch mode.
         """
         body = msg.body if hasattr(msg, "body") else msg
         entry = json.loads(body)
@@ -149,7 +167,7 @@ class WebhitConsumerService(BaseAsyncFactory):
                 ip = format_ipv4_as_mapped_ipv6(raw_ip)
             except ValueError:
                 logger.warning(f"[SKIP] Invalid IP address: {raw_ip}")
-                await msg.ack()  # ✅ Acknowledge to prevent reprocessing
+                await msg.ack()
                 return
 
             client_id = int(q["client"])
@@ -158,7 +176,7 @@ class WebhitConsumerService(BaseAsyncFactory):
             if site_id is None:
                 logger.warning(f"Invalid site ID: {q['site']} — skipping")
                 logger.warning(f"Query string was {q}")
-                await msg.ack()  # ✅ Don't requeue
+                await msg.ack()
                 return
 
             try:
@@ -229,28 +247,9 @@ class WebhitConsumerService(BaseAsyncFactory):
                 for (entry, client_id, ip, site_id, timestmp), redis_imp_id in zip(entry_data, impression_results):
                     await self._process_single_webhit_impl(db, client_id, ip, site_id, timestmp, redis_imp_id)
 
-    async def _process_single_webhit(self, entry, db):
-        """Compatibility method for handling entry directly."""
-        q = entry["query"]
-        raw_ip = entry.get("client_ip", "").split(",")[0].strip()
-        ip = format_ipv4_as_mapped_ipv6(raw_ip)
-        client_id = int(q["client"])
-        site_id = extract_leading_int(q["site"])
-        if site_id is None:
-            logger.warning(f"Invalid site ID: {q['site']} — skipping")
-            return
-        try:
-            timestmp = datetime.fromisoformat(entry.get("timestamp"))
-        except Exception:
-            timestmp = func.now()
-        redis_imp_id = await self.redis.get(f"imp:{client_id}:{ip}")
-
-        await self._process_single_webhit_impl(db, client_id, ip, site_id, timestmp, redis_imp_id)
-
     async def _process_single_webhit_impl(self, db, client_id, ip, site_id, timestmp, redis_imp_id):
         """Process a single webhit with optimized database and Redis operations."""
         impression_id = int(redis_imp_id) if redis_imp_id else None
-        # ip = format_ipv4_as_mapped_ipv6(ip)
         seven_days_ago = timestmp - timedelta(days=7)
 
         logger.debug(
@@ -340,7 +339,7 @@ class WebhitConsumerService(BaseAsyncFactory):
                     "timestamp": timestmp.isoformat() if isinstance(timestmp, datetime) else str(timestmp),
                 }
 
-                await self.rabbitmq.publish(
+                await self.rabbit.publish(
                     exchange="",
                     routing_key="resolved_webhits_queue",
                     message=payload

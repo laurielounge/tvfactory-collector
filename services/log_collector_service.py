@@ -1,5 +1,4 @@
 # services/log_collector_service.py
-import asyncio
 import hashlib
 import json
 import subprocess
@@ -8,9 +7,7 @@ from urllib.parse import urlparse, parse_qs
 from redis.exceptions import RedisError
 
 from core.logger import logger
-from infrastructure.circuit_breaker import RedisHealthChecker, HealthCheckRegistry
-from infrastructure.redis_client import get_redis_client
-from utils.async_factory import BaseAsyncFactory
+from infrastructure.async_factory import BaseAsyncFactory
 from utils.timer import StepTimer
 
 LOG_QUEUE = "loghit_queue"
@@ -23,7 +20,7 @@ HOSTS = ["10.0.0.50", "10.0.0.51", "10.0.0.52", "10.0.0.53", "10.0.0.150", "10.0
          "10.0.0.153", "10.0.0.154"]
 
 
-# --- Utility Functions ---
+# --- Utility Functions [unchanged] ---
 
 def parse_log_line(raw_line: str) -> dict | None:
     """Parses a raw tab-delimited log line into structured fields."""
@@ -76,7 +73,7 @@ def process_log_payload(raw_json: str) -> tuple[str, dict] | None:
         return None
 
 
-# --- Collector Service Class ---
+# --- Collector Service Class (Refactored) ---
 
 class LogCollectorService(BaseAsyncFactory):
     """
@@ -98,31 +95,48 @@ class LogCollectorService(BaseAsyncFactory):
     """
 
     def __init__(self):
-        logger.info("Init log collector service")
+        # Initialize with Redis dependency
+        super().__init__(require_redis=True)
         self.timer = StepTimer()
-        self.redis = None
+        logger.info("LogCollectorService initialized")
 
-    async def async_setup(self):
-        self.redis = get_redis_client()
+    async def service_setup(self):
+        """Service-specific setup after connections established."""
+        logger.info("LogCollectorService setup complete")
 
-    async def start(self, interval_seconds: int = 300, run_once=False):
-        logger.info("LogCollectorService pre-start.")
-        registry = HealthCheckRegistry(
-            RedisHealthChecker(self.redis),
-        )
-        await registry.assert_healthy_or_exit()
-        logger.info("LogCollectorService started.")
+    async def process_batch(self, batch_size: int = None, timeout: float = 30.0) -> int:
+        """
+        Process a batch of hosts, reading their logs and queueing entries.
+
+        Args:
+            batch_size: Ignored (processes all configured hosts)
+            timeout: Maximum processing time (currently unused)
+
+        Returns:
+            int: Number of hosts successfully processed
+        """
+        return await self.process_hosts_batch()
+
+    async def process_hosts_batch(self):
+        """Processes a single batch of all configured hosts."""
+        logger.info(f"Processing batch of {len(HOSTS)} hosts")
+        processed = 0
+
+        # Check health with backoff instead of exiting
+        if not await self._registry.check_with_backoff(max_wait=30):
+            logger.error("Health check failed - skipping processing cycle")
+            return 0
+
+        # Process all hosts with resilient error handling
         for host in HOSTS:
-            await self._process_host(host)
-
-        if run_once:
-            return
-
-        while True:
-            await asyncio.sleep(interval_seconds)
-            for host in HOSTS:
+            try:
                 await self._process_host(host)
-            logger.info("Finished log collecting")
+                processed += 1
+            except Exception as e:
+                logger.error(f"Error processing host {host}: {e}")
+
+        logger.info(f"Processed {processed}/{len(HOSTS)} hosts")
+        return processed
 
     async def _get_log_state(self, hostname: str) -> dict:
         try:

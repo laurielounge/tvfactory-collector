@@ -2,11 +2,8 @@
 import asyncio
 
 from core.logger import logger
-from infrastructure.circuit_breaker import RedisHealthChecker, RabbitMQHealthChecker, HealthCheckRegistry
-from infrastructure.rabbitmq_client import AsyncRabbitMQClient
-from infrastructure.redis_client import get_redis_client
+from infrastructure.async_factory import BaseAsyncFactory
 from services.loghit_processor import process_log_payload
-from utils.async_factory import BaseAsyncFactory
 
 LOG_QUEUE = "loghit_queue"
 BATCH_SIZE = 5000
@@ -33,36 +30,43 @@ class LoghitWorkerService(BaseAsyncFactory):
     - ImpressionConsumerService and WebhitConsumerService, which consume from those raw queues
     """
 
-    def __init__(self, redis_client, rabbitmq_client):
-        self.redis = None
-        self.rabbitmq = None
+    def __init__(self, run_once=False):
+        super().__init__(require_redis=True, require_rabbit=True)
+        self.run_once = run_once
+        logger.info("LoghitWorkerService initialized")
 
-    async def async_setup(self):
-        self.redis = await get_redis_client()
-        self.rabbitmq = AsyncRabbitMQClient()
-        await self.rabbitmq.connect()
+    async def service_setup(self):
+        """Service-specific setup after connections established."""
+        # Ensure queues are declared
+        if self.rabbit:
+            await self.rabbit.declare_standard_queues()
+        logger.info("LoghitWorkerService setup complete")
 
-    async def start(self, batch_size=BATCH_SIZE, interval_seconds=15, run_once=False):
-        logger.info("LoghitWorkerService pre-start.")
-        await self.rabbitmq.connect()
-        registry = HealthCheckRegistry(
-            RedisHealthChecker(self.redis),
-            RabbitMQHealthChecker(self.rabbitmq),
-        )
-        await registry.assert_healthy_or_exit()
-        logger.info("LoghitWorkerService started.")
+    async def process_batch(self, batch_size: int = BATCH_SIZE, timeout: float = 30.0) -> int:
+        """
+        Process a batch of log entries from Redis and publish to appropriate RabbitMQ queues.
 
-        while True:
-            count = await self._process_batch(batch_size)
-            if run_once or count == 0:
-                break
-            await asyncio.sleep(interval_seconds)
+        Args:
+            batch_size: Maximum number of log entries to process
+            timeout: Maximum processing time (currently unused)
 
-        await self.rabbitmq.close()
+        Returns:
+            int: Number of log entries successfully processed
+        """
+        if not self.redis or not self.rabbit:
+            logger.error("Cannot process batch: Redis or RabbitMQ connection missing")
+            return 0
 
-    async def _process_batch(self, batch_size):
         count = 0
+        start_time = asyncio.get_event_loop().time()
+
         for _ in range(batch_size):
+            # Check timeout
+            if asyncio.get_event_loop().time() - start_time > timeout:
+                logger.warning(f"Batch processing timed out after {count} entries")
+                break
+
+            # Get next item from Redis
             raw = await self.redis.rpop(LOG_QUEUE)
             if not raw:
                 break
@@ -83,7 +87,39 @@ class LoghitWorkerService(BaseAsyncFactory):
             }.get(category)
 
             if routing_key:
-                await self.rabbitmq.publish("", routing_key, payload)
+                await self.rabbit.publish("", routing_key, payload)
                 logger.debug(f"Published to {routing_key}: {payload['host']}:{payload['line_num']}")
             count += 1
+
+            # Early exit if run_once and we've processed at least one item
+            if self.run_once and count > 0:
+                break
+
+        logger.info(f"Processed {count} log entries")
         return count
+
+    # Override _processing_loop to implement run_once behavior
+    async def _processing_loop(self, interval_seconds):
+        """Processing loop with optional run-once behavior"""
+        while self._running:
+            try:
+                items_processed = await self.process_batch()
+
+                # If run_once is set and we've processed items, exit the loop
+                if self.run_once and items_processed > 0:
+                    logger.info("Run-once mode: exiting after successful batch")
+                    break
+
+                log_level = logging.INFO if items_processed > 0 else logging.DEBUG
+                logger.log(log_level, f"Processed {items_processed} items")
+
+                # Only sleep if we're continuing
+                if not self.run_once:
+                    await asyncio.sleep(interval_seconds)
+
+            except asyncio.CancelledError:
+                logger.info(f"{self.__class__.__name__} processing loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in processing loop: {e}")
+                await asyncio.sleep(interval_seconds / 2)

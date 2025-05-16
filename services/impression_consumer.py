@@ -9,13 +9,8 @@ from sqlalchemy import insert, func
 
 from config.config import settings
 from core.logger import logger
-from infrastructure.circuit_breaker import RedisHealthChecker, RabbitMQHealthChecker, MariaDBHealthChecker, \
-    HealthCheckRegistry
-from infrastructure.database import AsyncDatabaseManager
-from infrastructure.rabbitmq_client import AsyncRabbitMQClient
-from infrastructure.redis_client import get_redis_client
+from infrastructure.async_factory import BaseAsyncFactory
 from models.impression import Impression
-from utils.async_factory import BaseAsyncFactory
 from utils.ip import format_ipv4_as_mapped_ipv6
 from utils.timer import StepTimer
 
@@ -39,85 +34,66 @@ class ImpressionConsumerService(BaseAsyncFactory):
         - dedupe:webhit:{client}:{ip} = delete (reset webhit tracking)
     """
 
-    def __init__(self):
-        self.db = None
-        self.redis = None
-        self.rabbitmq = None
+    def __init__(self, run_once=False):
+        super().__init__(require_redis=True, require_db=True, require_rabbit=True)
         self.queue_name = "raw_impressions_queue"
         self.timer = StepTimer()
+        self.run_once = run_once
+        logger.info("ImpressionConsumerService initialized")
 
-    async def async_setup(self):
-        self.db = AsyncDatabaseManager()
-        await self.db.initialize()
-        self.rabbitmq = AsyncRabbitMQClient()
-        await self.rabbitmq.connect()
-        self.redis = await get_redis_client()
+    async def service_setup(self):
+        """Service-specific setup after connections established."""
+        if self.rabbit:
+            # Ensure our queues exist
+            await self.rabbit.declare_queue(self.queue_name, durable=True)
+            await self.rabbit.declare_queue("resolved_impressions_queue", durable=True)
+        logger.info("ImpressionConsumerService setup complete")
 
-    async def start(self, run_once=False, max_messages=MAX_MESSAGES):
-        logger.info("ImpressionConsumerService started")
-        await self.rabbitmq.connect()
-        registry = HealthCheckRegistry(
-            RedisHealthChecker(self.redis),
-            RabbitMQHealthChecker(self.rabbitmq),
-            MariaDBHealthChecker(self.db)
-        )
-
-        await registry.assert_healthy_or_exit()
-        if run_once:
-            await self.run_once(max_messages=max_messages)
-        else:
-            await self.rabbitmq.consume(self.queue_name, self.process_message)
-            return await asyncio.Future()  # Keeps service alive
-
-    @staticmethod
-    def _is_valid_impression(entry: dict) -> bool:
+    async def process_batch(self, batch_size=MAX_MESSAGES, timeout=30.0):
         """
-        Verifies that the impression entry has all required query params.
-        """
-        q = entry.get("query", {})
-        return all(k in q for k in ("client", "booking", "creative"))
+        Processes a single batch of impression messages with sophisticated optimization.
 
-    async def process_message(self, msg):
-        """
-        Callback for continuous queue consumption mode.
-        Processes one message at a time.
-        """
-        body = msg.body if hasattr(msg, "body") else msg
-        entry = json.loads(body)
-        if self._is_valid_impression(entry):
-            await self._handle_impression_batch([entry])
-        await msg.ack()
+        Args:
+            batch_size: Maximum number of messages to process
+            timeout: Maximum time to spend processing in seconds
 
-    async def run_once(self, max_messages=MAX_MESSAGES):
-        """Efficiently processes messages in proper batches to minimize network overhead."""
-        logger.info("ImpressionConsumerService processing batch")
+        Returns:
+            int: Number of messages processed
+        """
+        logger.info(f"Processing batch (max size: {batch_size})")
         batch = []
         messages = []
+        start_time = asyncio.get_event_loop().time()
 
         # The critical optimization: retrieve messages in bulk
         with self.timer.time("message_retrieval"):
-            # Create connection and channel if needed (once, not per message)
-            if not self.rabbitmq.channel:
-                await self.rabbitmq.connect()
+            # Create connection and channel if needed
+            if not self.rabbit.channel:
+                await self.rabbit.connect()
 
             # Get queue reference once
-            queue = await self.rabbitmq.channel.declare_queue(
+            queue = await self.rabbit.channel.declare_queue(
                 self.queue_name, passive=True, durable=True
             )
 
             # Set prefetch to improve throughput
-            await self.rabbitmq.channel.set_qos(prefetch_count=max_messages)
+            await self.rabbit.channel.set_qos(prefetch_count=batch_size)
 
             # Batch collect with graceful timeout handling
             try:
                 async with queue.iterator(timeout=2.0) as queue_iter:
                     async for message in queue_iter:
                         try:
+                            # Check time limit
+                            if asyncio.get_event_loop().time() - start_time > timeout:
+                                logger.warning(f"Batch processing timeout reached after {len(batch)} messages")
+                                break
+
                             payload = json.loads(message.body)
                             if self._is_valid_impression(payload):
                                 batch.append(payload)
                                 messages.append(message)
-                                if len(batch) >= max_messages:
+                                if len(batch) >= batch_size:
                                     break
                             else:
                                 await message.ack()
@@ -141,6 +117,43 @@ class ImpressionConsumerService(BaseAsyncFactory):
 
         logger.info(f"Processed {len(batch)} impression messages")
         return len(batch)
+
+    # Override _processing_loop to implement run_once behavior
+    async def _processing_loop(self, interval_seconds):
+        """Processing loop with optional run-once behavior"""
+        while self._running:
+            try:
+                # Check health with backoff
+                if not await self._registry.check_with_backoff():
+                    logger.warning("Health check failed - waiting before retry")
+                    await asyncio.sleep(interval_seconds)
+                    continue
+
+                # Process a batch
+                count = await self.process_batch()
+
+                # If run_once is set and we've processed items, exit the loop
+                if self.run_once and count > 0:
+                    logger.info("Run-once mode: exiting after successful batch")
+                    break
+
+                # Sleep if no messages or between batches
+                await asyncio.sleep(interval_seconds if count == 0 else 0.1)
+
+            except asyncio.CancelledError:
+                logger.info(f"{self.__class__.__name__} processing loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in processing loop: {e}")
+                await asyncio.sleep(interval_seconds)
+
+    @staticmethod
+    def _is_valid_impression(entry: dict) -> bool:
+        """
+        Verifies that the impression entry has all required query params.
+        """
+        q = entry.get("query", {})
+        return all(k in q for k in ("client", "booking", "creative"))
 
     async def _handle_impression_batch(self, entries):
         """Process impressions with optimal database, Redis, and message queue operations."""
@@ -184,7 +197,6 @@ class ImpressionConsumerService(BaseAsyncFactory):
             })
 
         # Insert into database
-        # Insert into database
         async with self.db.async_session_scope('TVFACTORY') as session:
             stmt = insert(Impression).values(values).returning(Impression.id)
             result = await session.execute(stmt)
@@ -203,7 +215,7 @@ class ImpressionConsumerService(BaseAsyncFactory):
         # Publish resolved impression message to RabbitMQ
         for msg, impression_id in zip(publish_payloads, ids):
             msg["id"] = impression_id
-            await self.rabbitmq.publish(
+            await self.rabbit.publish(
                 exchange="",
                 routing_key="resolved_impressions_queue",
                 message=msg
