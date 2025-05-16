@@ -130,20 +130,20 @@ class BaseAsyncFactory(ABC):
         """
         pass
 
-    async def start(self, interval_seconds: int = 60):
+    async def start(self, interval_seconds: int = 60, batch_size: int = None, **kwargs):
         """Begins the continuous processing loop with appropriate task management."""
         logger.info(f"Starting {self.__class__.__name__}")
         self._running = True
 
         # Use a task to allow cancellation during shutdown
-        self._task = asyncio.create_task(self._processing_loop(interval_seconds))
+        self._task = asyncio.create_task(self._processing_loop(interval_seconds, batch_size, **kwargs))
         return self._task
 
-    async def _processing_loop(self, interval_seconds):
+    async def _processing_loop(self, interval_seconds, batch_size=None, **kwargs):
         """Internal long-running loop that processes batches on schedule."""
         while self._running:
             try:
-                items_processed = await self.process_batch()
+                items_processed = await self.process_batch(batch_size=batch_size, **kwargs)
                 log_level = logging.INFO if items_processed > 0 else logging.DEBUG
                 logger.log(log_level, f"Processed {items_processed} items")
                 await asyncio.sleep(interval_seconds)
