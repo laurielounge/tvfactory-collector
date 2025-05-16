@@ -6,7 +6,6 @@ import sys
 from dotenv import load_dotenv
 
 from core.logger import logger
-from infrastructure.database import AsyncDatabaseManager
 from infrastructure.rabbitmq_client import AsyncRabbitMQClient
 from services.impression_consumer import ImpressionConsumerService
 from services.log_collector_service import LogCollectorService
@@ -35,10 +34,8 @@ async def main():
         logger.setLevel(logging.DEBUG)
         logger.debug("Run-once mode detected — log level set to DEBUG.")
 
-    db_manager = AsyncDatabaseManager()
     rabbitmq_client = AsyncRabbitMQClient()
     await rabbitmq_client.connect()
-    await db_manager.initialize()
 
     logger.info(f"Host name to check we read .env: {sys.platform}")
 
@@ -108,7 +105,6 @@ async def main():
         logger.error(f"Unknown role: {args.role}")
         sys.exit(1)
 
-    await db_manager.close()
     await rabbitmq_client.close()
 
 
