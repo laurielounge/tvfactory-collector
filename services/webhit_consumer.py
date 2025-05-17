@@ -121,8 +121,12 @@ class WebhitConsumerService(BaseAsyncFactory):
         return len(batch)
 
     # Override _processing_loop to implement run_once behavior
-    async def _processing_loop(self, interval_seconds):
+    async def _processing_loop(self, interval_seconds, batch_size=None, **kwargs):
         """Processing loop with optional run-once behavior"""
+        # Store batch_size if provided for use in process_batch
+        if batch_size:
+            self.batch_size = batch_size
+
         while self._running:
             try:
                 # Check health with backoff
@@ -132,7 +136,7 @@ class WebhitConsumerService(BaseAsyncFactory):
                     continue
 
                 # Process a batch
-                count = await self.process_batch()
+                count = await self.process_batch(batch_size=self.batch_size)
 
                 # If run_once is set and we've processed items, exit the loop
                 if self.run_once and count > 0:

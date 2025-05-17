@@ -7,7 +7,7 @@ from typing import Callable, Any, Optional
 
 import aio_pika
 
-from config import settings
+from config.config import settings
 from core.logger import logger
 
 
@@ -70,6 +70,14 @@ class AsyncRabbitMQClient:
         # Declare result queues
         await self.channel.declare_queue('resolved_impressions_queue', durable=True)
         await self.channel.declare_queue('resolved_webhits_queue', durable=True)
+
+    async def declare_queue(self, queue_name, durable=True) -> None:
+        """Declare our standard set of queues with appropriate durability."""
+        if not self.channel:
+            await self.connect()
+
+        # Declare input queues
+        await self.channel.declare_queue(queue_name, durable=durable)
 
     async def consume(self, queue_name: str, callback: Callable) -> None:
         """Begin consumption from specified queue with callback processing."""

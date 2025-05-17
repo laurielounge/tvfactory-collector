@@ -23,6 +23,13 @@ class Settings:
     TVFACTORY_DATABASE = os.getenv("TVFACTORY_DATABASE")
     TVFACTORY_USERNAME = os.getenv("TVFACTORY_USERNAME")
 
+    MARIADB_HOST = os.getenv("MARIADB_HOST", "10.0.0.113")
+    MARIADB_PORT = int(os.getenv("MARIADB_PORT", 3306))
+    MARIADB_USER = os.getenv("MARIADB_USER", "iplookup_service")
+    MARIADB_PASSWORD = os.getenv("MARIADB_PASSWORD")
+    MARIADB_DB = os.getenv("MARIADB_DB", "infinitum_raw_data")
+    MARIADB_DSN = f"mysql+aiomysql://{MARIADB_USER}:{MARIADB_PASSWORD}@{MARIADB_HOST}:{MARIADB_PORT}/{MARIADB_DB}"  # Redis Settings
+
     REDIS_HOST = os.getenv("REDIS_HOST")
     REDIS_PORT = os.getenv("REDIS_PORT")
     REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")

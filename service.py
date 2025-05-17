@@ -3,14 +3,16 @@ import argparse
 import asyncio
 import signal
 import sys
+import time
 
 from dotenv import load_dotenv
 
 from core.logger import logger
 from infrastructure.async_factory import BaseAsyncFactory
 from services.impression_consumer import ImpressionConsumerService
-from services.log_collector_service import LogCollectorService
+# from services.log_collector_service import LogCollectorService
 from services.loghit_worker import LoghitWorkerService
+from services.parallel_loghit_worker import ParallelLoghitWorkerService
 from services.webhit_consumer import WebhitConsumerService
 
 load_dotenv()
@@ -53,6 +55,16 @@ async def run_service(service_class, run_once=False, **kwargs) -> BaseAsyncFacto
     return service
 
 
+async def run_parallel_loghit(num_workers=4, batch_size=5000, interval_seconds=1):
+    """Run multiple loghit workers in parallel."""
+    logger.info(f"Starting parallel LoghitWorker with {num_workers} workers")
+    service = ParallelLoghitWorkerService(num_workers=num_workers)
+    await service.initialise()
+    active_services.append(service)
+    await service.start(batch_size=batch_size, interval_seconds=interval_seconds)
+    return service
+
+
 async def run_sequence(run_once=False):
     """Run all services in coordinated sequence with proper cleanup."""
     logger.info("Running coordinated sequence: loghit → impression → webhit")
@@ -72,37 +84,85 @@ async def run_sequence(run_once=False):
 
     async def sequence_loop():
         while True:
-            # Phase 1: Drain loghit_queue
-            logger.info("[SEQUENCE] Draining loghit_queue (Redis)")
+            # Phase 1: Process loghit_queue with bounds
+            logger.info("[SEQUENCE] Processing loghit_queue (max 30 seconds)")
             count = 0
-            while True:
-                batch_count = await loghit_worker.process_batch(batch_size=1000)
+            max_items = 20000  # Process at most this many items per cycle
+            start_time = time.time()
+            max_duration = 30  # seconds
+
+            while (time.time() - start_time < max_duration) and (count < max_items):
+                batch_count = await loghit_worker.process_batch(batch_size=500)
+                if batch_count == 0:
+                    # If no items processed in this batch, small pause then try once more
+                    await asyncio.sleep(0.5)
+                    batch_count = await loghit_worker.process_batch(batch_size=500)
+                    if batch_count == 0:
+                        break  # Queue is empty after retrying
+                count += batch_count
+
+            duration = time.time() - start_time
+            logger.info(f"[SEQUENCE] Processed {count} log entries in {duration:.1f}s ({count / duration:.1f}/s if >0)")
+
+            # Phase 2: Process impressions queue with bounds
+            logger.info("[SEQUENCE] Processing raw_impressions_queue")
+            imp_count = 0
+            imp_start = time.time()
+            max_imp_time = 30  # seconds
+
+            queue_length = await loghit_worker.rabbit.get_queue_length("raw_impressions_queue")
+            logger.info(f"[SEQUENCE] Found {queue_length} impressions to process")
+
+            while queue_length > 0 and (time.time() - imp_start < max_imp_time) and (imp_count < max_items):
+                batch_count = await impression_service.process_batch(batch_size=500)
                 if batch_count == 0:
                     break
-                count += batch_count
-            logger.info(f"[SEQUENCE] loghit_queue drained — {count} lines processed")
+                imp_count += batch_count
 
-            # Phase 2: Drain impressions_queue
-            logger.info("[SEQUENCE] Draining raw_impressions_queue")
-            queue_length = await loghit_worker.rabbit.get_queue_length("raw_impressions_queue")
-            while queue_length > 0:
-                await impression_service.process_batch(batch_size=1000)
-                queue_length = await loghit_worker.rabbit.get_queue_length("raw_impressions_queue")
-            logger.info("[SEQUENCE] raw_impressions_queue drained")
+                # Only check queue length every few batches to reduce overhead
+                if imp_count % 2000 == 0:
+                    queue_length = await loghit_worker.rabbit.get_queue_length("raw_impressions_queue")
 
-            # Phase 3: Drain webhits_queue
-            logger.info("[SEQUENCE] Draining raw_webhits_queue")
+            imp_duration = time.time() - imp_start
+            if imp_count > 0:
+                logger.info(
+                    f"[SEQUENCE] Processed {imp_count} impressions in {imp_duration:.1f}s ({imp_count / imp_duration:.1f}/s)")
+            else:
+                logger.info("[SEQUENCE] No impressions processed")
+
+            # Phase 3: Process webhits queue with bounds
+            logger.info("[SEQUENCE] Processing raw_webhits_queue")
+            hit_count = 0
+            hit_start = time.time()
+            max_hit_time = 30  # seconds
+
             queue_length = await loghit_worker.rabbit.get_queue_length("raw_webhits_queue")
-            while queue_length > 0:
-                await webhit_service.process_batch(batch_size=1000)
-                queue_length = await loghit_worker.rabbit.get_queue_length("raw_webhits_queue")
-            logger.info("[SEQUENCE] raw_webhits_queue drained")
+            logger.info(f"[SEQUENCE] Found {queue_length} webhits to process")
 
-            if run_once:
+            while queue_length > 0 and (time.time() - hit_start < max_hit_time) and (hit_count < max_items):
+                batch_count = await webhit_service.process_batch(batch_size=500)
+                if batch_count == 0:
+                    break
+                hit_count += batch_count
+
+                # Only check queue length every few batches to reduce overhead
+                if hit_count % 2000 == 0:
+                    queue_length = await loghit_worker.rabbit.get_queue_length("raw_webhits_queue")
+
+            hit_duration = time.time() - hit_start
+            if hit_count > 0:
+                logger.info(
+                    f"[SEQUENCE] Processed {hit_count} webhits in {hit_duration:.1f}s ({hit_count / hit_duration:.1f}/s)")
+            else:
+                logger.info("[SEQUENCE] No webhits processed")
+
+            # Exit if run_once and we've processed something
+            if run_once and (count > 0 or imp_count > 0 or hit_count > 0):
                 break
 
+            # Shorter sleep between cycles for responsiveness
             logger.info("[SEQUENCE] Sleeping before next cycle")
-            await asyncio.sleep(30)
+            await asyncio.sleep(5)  # Shortened from 30s for more frequent processing
 
     try:
         await sequence_loop()
@@ -111,12 +171,41 @@ async def run_sequence(run_once=False):
         await graceful_shutdown()
 
 
+async def run_pipeline(num_workers=3):
+    """Run all services in parallel as a continuous processing pipeline."""
+    logger.info(f"Starting continuous processing pipeline with {num_workers} loghit workers")
+
+    # Start loghit workers
+    loghit_service = ParallelLoghitWorkerService(num_workers=num_workers)
+    await loghit_service.initialise()
+
+    # Start impression consumer
+    impression_service = await ImpressionConsumerService.create()
+    await impression_service.initialise()
+
+    # Start webhit consumer
+    webhit_service = await WebhitConsumerService.create()
+    await webhit_service.initialise()
+
+    # Add all to active services
+    active_services.extend([loghit_service, impression_service, webhit_service])
+
+    # Start all services in parallel
+    await asyncio.gather(
+        loghit_service.start(batch_size=5000, interval_seconds=1),
+        impression_service.start(interval_seconds=5),
+        webhit_service.start(batch_size=5000, interval_seconds=5)
+    )
+
+
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--role", required=True, help="collector | loghit | impression | webhit | sequence")
+    parser.add_argument("--role", required=True, help="loghit | impression | webhit | sequence | pipeline")
     parser.add_argument("--once", action="store_true", help="Run once and exit")
     parser.add_argument("--batch-size", type=int, default=5000, help="Batch size for processing")
     parser.add_argument("--interval", type=int, help="Interval between processing cycles")
+    parser.add_argument("--parallel", action="store_true", help="Use parallel processing (only for loghit)")
+    parser.add_argument("--workers", type=int, default=4, help="Number of parallel workers (with --parallel)")
     args = parser.parse_args()
 
     if args.once:
@@ -134,16 +223,20 @@ async def main():
         }.get(args.role, 30)  # 30 seconds default
 
     try:
-        if args.role == "collector":
-            await run_service(LogCollectorService,
-                              run_once=args.once,
-                              interval_seconds=args.interval)
-
-        elif args.role == "loghit":
-            await run_service(LoghitWorkerService,
-                              run_once=args.once,
-                              batch_size=args.batch_size,
-                              interval_seconds=args.interval)
+        if args.role == "loghit":
+            if args.parallel:
+                logger.info(f"Starting parallel loghit processing with {args.workers} workers")
+                await run_parallel_loghit(
+                    num_workers=args.workers,
+                    batch_size=args.batch_size,
+                    interval_seconds=args.interval
+                )
+            else:
+                await run_service(LoghitWorkerService,
+                                  run_once=args.once,
+                                  batch_size=args.batch_size,
+                                  # interval_seconds=args.interval
+                                  )
 
         elif args.role == "impression":
             await run_service(ImpressionConsumerService,
@@ -158,6 +251,8 @@ async def main():
         elif args.role == "sequence":
             await run_sequence(run_once=args.once)
 
+        elif args.role == "pipeline":
+            await run_pipeline(num_workers=args.workers)
         else:
             logger.error(f"Unknown role: {args.role}")
             sys.exit(1)

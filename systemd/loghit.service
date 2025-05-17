@@ -1,4 +1,4 @@
-# /etc/systemd/system/loghit.service
+# Update /etc/systemd/system/loghit.service
 [Unit]
 Description=Infinitum Sequence Processing Service
 After=network.target rabbitmq-server.service
@@ -7,7 +7,7 @@ After=network.target rabbitmq-server.service
 User=root
 Group=root
 WorkingDirectory=/opt/collector_service
-ExecStart=/opt/collection_venv/bin/python service.py --role sequence
+ExecStart=/opt/collection_venv/bin/python service.py --role sequence --batch-size 500
 Restart=on-failure
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1

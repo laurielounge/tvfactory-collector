@@ -1,29 +1,30 @@
 # services/loghit_worker.py
 import asyncio
+import json
+import logging
 
 from core.logger import logger
 from infrastructure.async_factory import BaseAsyncFactory
-from services.loghit_processor import process_log_payload
+from services.vector_processor import process_vector_payload
 
 LOG_QUEUE = "loghit_queue"
-BATCH_SIZE = 5000
+BATCH_SIZE = 10000
 
 
 class LoghitWorkerService(BaseAsyncFactory):
     """
-    Processes raw log payloads from Redis and dispatches them to RabbitMQ based on type.
+    Processes raw log payloads from RabbitMQ and dispatches them to downstream queues.
 
     Responsibilities:
-    - RPOP from Redis list `loghit_queue`
+    - Consumes from RabbitMQ queue `loghit_queue`
     - Parse and classify each log entry as either:
         - impression → publish to `raw_impressions_queue`
         - webhit     → publish to `raw_webhits_queue`
     - Drops malformed or unclassifiable entries
     - Supports batch processing and optional interval looping
-    - Does NOT extract the ipaddress from the log line
 
     External Systems:
-    - ✅ Reads from Redis (`loghit_queue`)
+    - ✅ Reads from RabbitMQ (`loghit_queue`)
     - ✅ Writes to RabbitMQ (`raw_impressions_queue`, `raw_webhits_queue`)
 
     Downstream:
@@ -31,7 +32,9 @@ class LoghitWorkerService(BaseAsyncFactory):
     """
 
     def __init__(self, run_once=False):
-        super().__init__(require_redis=True, require_rabbit=True)
+        # Note: We've removed require_redis=True as we no longer need Redis
+        super().__init__(require_redis=False, require_rabbit=True)
+        self.queue_name = LOG_QUEUE
         self.run_once = run_once
         logger.info("LoghitWorkerService initialized")
 
@@ -39,71 +42,65 @@ class LoghitWorkerService(BaseAsyncFactory):
         """Service-specific setup after connections established."""
         # Ensure queues are declared
         if self.rabbit:
+            await self.rabbit.declare_queue(self.queue_name, durable=True)
             await self.rabbit.declare_standard_queues()
         logger.info("LoghitWorkerService setup complete")
 
+    # In loghit_worker.py - modify process_batch
     async def process_batch(self, batch_size: int = BATCH_SIZE, timeout: float = 30.0) -> int:
         """
-        Process a batch of log entries from Redis and publish to appropriate RabbitMQ queues.
-
-        Args:
-            batch_size: Maximum number of log entries to process
-            timeout: Maximum processing time (currently unused)
-
-        Returns:
-            int: Number of log entries successfully processed
+        Process a batch of log entries from RabbitMQ with detailed diagnostic logging.
         """
-        if not self.redis or not self.rabbit:
-            logger.error("Cannot process batch: Redis or RabbitMQ connection missing")
+        if not self.rabbit:
+            logger.error("Cannot process batch: RabbitMQ connection missing")
             return 0
 
+        # Override batch size for intense debugging
+        logger.info(f"Retrieving debug batch of {batch_size} messages")
+        messages = await self.rabbit.get_batch(self.queue_name, batch_size)
+
+        if not messages:
+            return 0
+
+        logger.debug(f"Retrieved {len(messages)} messages for debugging")
+
+        # Process each message with intense logging
         count = 0
-        start_time = asyncio.get_event_loop().time()
-
-        for _ in range(batch_size):
-            # Check timeout
-            if asyncio.get_event_loop().time() - start_time > timeout:
-                logger.warning(f"Batch processing timed out after {count} entries")
-                break
-
-            # Get next item from Redis
-            raw = await self.redis.rpop(LOG_QUEUE)
-            if not raw:
-                break
-
+        for message in messages:
             try:
-                result = process_log_payload(raw)
+                # Parse message directly without conversion
+                payload = json.loads(message.body)
+                logger.debug(f"Received {payload}")
+
+                # Use the new Vector-specific processor
+                result = process_vector_payload(payload)
+
+                if result:
+                    category, entry = result
+                    routing_key = {
+                        "impression": "raw_impressions_queue",
+                        "webhit": "raw_webhits_queue"
+                    }.get(category)
+
+                    if routing_key:
+                        await self.rabbit.publish("", routing_key, entry)
+                        count += 1
+
+                # Always acknowledge
+                await message.ack()
+
             except Exception as e:
-                logger.warning(f"Failed to process log line: {e}")
-                continue
+                logger.warning(f"Failed to process log message: {str(e)}", exc_info=True)
+                await message.ack()
 
-            if not result:
-                continue
-
-            category, payload = result
-            routing_key = {
-                "impression": "raw_impressions_queue",
-                "webhit": "raw_webhits_queue"
-            }.get(category)
-
-            if routing_key:
-                await self.rabbit.publish("", routing_key, payload)
-                logger.debug(f"Published to {routing_key}: {payload['host']}:{payload['line_num']}")
-            count += 1
-
-            # Early exit if run_once and we've processed at least one item
-            if self.run_once and count > 0:
-                break
-
-        logger.info(f"Processed {count} log entries")
         return count
 
     # Override _processing_loop to implement run_once behavior
-    async def _processing_loop(self, interval_seconds):
+    async def _processing_loop(self, interval_seconds, batch_size=None, **kwargs):
         """Processing loop with optional run-once behavior"""
         while self._running:
             try:
-                items_processed = await self.process_batch()
+                items_processed = await self.process_batch(batch_size=batch_size)
 
                 # If run_once is set and we've processed items, exit the loop
                 if self.run_once and items_processed > 0:
