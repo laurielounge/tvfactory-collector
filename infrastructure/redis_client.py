@@ -2,7 +2,7 @@
 
 import redis.asyncio as redis
 
-from config.config import settings
+from config.settings import settings
 from core.logger import logger
 
 _client = None

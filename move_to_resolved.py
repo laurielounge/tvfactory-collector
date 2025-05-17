@@ -4,7 +4,7 @@ import asyncio
 
 from aio_pika import connect_robust, Message
 
-from config.config import settings
+from config.settings import settings
 from core.logger import logger
 
 

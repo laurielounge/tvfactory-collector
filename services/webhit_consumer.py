@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import func, select, and_, insert
 
-from config.config import settings
+from config.settings import settings
 from core.logger import logger
 from infrastructure.async_factory import BaseAsyncFactory
 from models.impression import Impression, FinishedImpression

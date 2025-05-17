@@ -7,7 +7,7 @@ from typing import Callable, Any, Optional
 
 import aio_pika
 
-from config.config import settings
+from config.settings import settings
 from core.logger import logger
 
 

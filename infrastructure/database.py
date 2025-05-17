@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, AsyncEngine
 from sqlalchemy.orm import scoped_session, sessionmaker
 
-from config.config import settings
+from config.settings import settings
 from core.logger import logger
 from utils.yaml_utils import load_configuration
 
