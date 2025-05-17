@@ -45,7 +45,7 @@ async def migrate_queue_fast(source: str, target: str):
 
 async def main():
     # await migrate_queue_fast("impressions_queue", "resolved_impressions_queue")
-    await migrate_queue_fast("webhits_queue", "resolved_webhits_queue")
+    await migrate_queue_fast("resolved_impressions_queue", "raw_impressions_queue")
 
 
 if __name__ == "__main__":
