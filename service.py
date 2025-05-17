@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 from core.logger import logger
 from infrastructure.async_factory import BaseAsyncFactory
 from services.impression_consumer import ImpressionConsumerService
-# from services.log_collector_service import LogCollectorService
 from services.loghit_worker import LoghitWorkerService
 from services.parallel_loghit_worker import ParallelLoghitWorkerService
 from services.webhit_consumer import WebhitConsumerService

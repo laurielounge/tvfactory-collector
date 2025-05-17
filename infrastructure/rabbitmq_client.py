@@ -7,18 +7,20 @@ from typing import Callable, Any, Optional
 
 import aio_pika
 
-from config.settings import settings
+from config import settings
 from core.logger import logger
 
 
 class AsyncRabbitMQClient:
     """Sophisticated asynchronous RabbitMQ interface."""
 
-    def __init__(self):
+    def __init__(self, default_prefetch=500):
         self.rabbitmq_host = settings.RABBITMQ_HOST
         self.rabbitmq_vhost = settings.RABBITMQ_VHOST
         self.rabbitmq_user = settings.RABBITMQ_USER
         self.rabbitmq_pass = settings.RABBITMQ_PASSWORD
+        self.default_prefetch = settings.RABBITMQ_PREFETCH if hasattr(settings,
+                                                                      'RABBITMQ_PREFETCH') else default_prefetch
         self.connection: Optional[aio_pika.RobustConnection] = None
         self.channel: Optional[aio_pika.RobustChannel] = None
         self._connection_lock = asyncio.Lock()
@@ -47,14 +49,14 @@ class AsyncRabbitMQClient:
                     heartbeat=600
                 )
 
-                # Create channel with prefetch for balanced consumption
+                # Create channel with a reasonable default prefetch
                 self.channel = await self.connection.channel()
-                await self.channel.set_qos(prefetch_count=100)
+                await self.channel.set_qos(prefetch_count=self.default_prefetch)
 
                 # Declare standard queues
                 await self.declare_standard_queues()
 
-                logger.info(f"Connected to RabbitMQ at {self.rabbitmq_host}")
+                logger.info(f"Connected to RabbitMQ at {self.rabbitmq_host} with prefetch {self.default_prefetch}")
             except Exception as e:
                 logger.error(f"Failed to connect to RabbitMQ: {e}")
                 raise
@@ -91,58 +93,45 @@ class AsyncRabbitMQClient:
         logger.debug(f"Started consuming from {queue_name}")
 
     async def get_batch(self, queue_name: str, batch_size: int = 500) -> list:
-        """
-        Retrieves a batch of messages with sophisticated error handling.
-
-        Args:
-            queue_name: The queue to retrieve messages from
-            batch_size: Maximum number of messages to retrieve
-
-        Returns:
-            List of messages, empty if none available
-        """
+        """Retrieves a batch of messages with reliable handling."""
         if not self.channel:
             await self.connect()
 
         messages = []
 
         try:
-            # Declare the queue passively - confirm existence without creation
             queue = await self.channel.declare_queue(
                 queue_name,
                 durable=True
             )
 
             # Set prefetch for optimal throughput
-            await self.channel.set_qos(prefetch_count=batch_size)
+            if batch_size > self.default_prefetch:
+                await self.channel.set_qos(prefetch_count=batch_size)
+                logger.debug(f"Temporarily increased prefetch to {batch_size} for large batch")
 
-            # Efficient batch retrieval with timeout
-            try:
-                async with queue.iterator(timeout=1.0) as queue_iter:
-                    for _ in range(batch_size):
-                        try:
-                            # Use a small timeout to avoid blocking too long
-                            message = await asyncio.wait_for(queue_iter.__anext__(), timeout=0.05)
-                            messages.append(message)
+            # Efficient batch retrieval using basic_get instead of iterator
+            for _ in range(batch_size):
+                try:
+                    # Use basic_get which is more reliable for batch processing
+                    message = await queue.get(fail=False)
+                    if message is None:
+                        break  # No more messages
 
-                            # Log batch progress with aristocratic restraint
-                            if len(messages) % 100 == 0:
-                                logger.debug(f"Retrieved {len(messages)} messages from {queue_name}")
+                    messages.append(message)
 
-                        except (asyncio.TimeoutError, StopAsyncIteration):
-                            # No more messages available - conclude with composure
-                            break
-                        except Exception as e:
-                            logger.error(f"Error retrieving message from {queue_name}: {e}")
-                            break
-            except Exception as e:
-                logger.error(f"Error iterating queue {queue_name}: {e}")
+                except Exception as e:
+                    logger.error(f"Error retrieving message from {queue_name}: {e}")
+                    break
 
-            # Log batch retrieval results
+            # Log results
             if messages:
                 logger.info(f"Retrieved batch of {len(messages)} messages from {queue_name}")
             elif batch_size > 0:
                 logger.debug(f"No messages available from {queue_name}")
+
+            if batch_size > self.default_prefetch:
+                await self.channel.set_qos(prefetch_count=self.default_prefetch)
 
             return messages
 
