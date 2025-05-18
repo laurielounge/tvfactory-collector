@@ -11,7 +11,7 @@ from config.settings import settings
 from core.logger import logger
 from infrastructure.async_factory import BaseAsyncFactory
 from models.impression import Impression, FinishedImpression
-from models.webhit import WebHit
+from models.webhit import WebHit, FinishedWebHit
 from utils.ip import format_ipv4_as_mapped_ipv6
 from utils.timer import StepTimer
 
@@ -255,6 +255,7 @@ class WebhitConsumerService(BaseAsyncFactory):
         """Process a single webhit with optimized database and Redis operations."""
         impression_id = int(redis_imp_id) if redis_imp_id else None
         seven_days_ago = timestmp - timedelta(days=7)
+        last_24_hours = timestmp - timedelta(days=1)
 
         logger.debug(
             f"[PROCESS SINGLE] Processing webhit for client {client_id}, site {site_id}, IP {ip} with impression ID {impression_id}")
@@ -306,11 +307,11 @@ class WebhitConsumerService(BaseAsyncFactory):
             logger.debug(f"[PROCESS SINGLE] Redis deduplication passed for {client_id=} {ip=} {site_id=}")
             # DB deduplication
             result = await db.execute(
-                select(WebHit.id).where(
+                select(FinishedWebHit.id).where(
                     and_(
-                        WebHit.impression_id == impression_id,
-                        WebHit.site_id == site_id,
-                        WebHit.timestmp > seven_days_ago,
+                        FinishedWebHit.impression_id == impression_id,
+                        FinishedWebHit.site_id == site_id,
+                        FinishedWebHit.timestmp > last_24_hours,
                     )
                 )
             )
