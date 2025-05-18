@@ -5,12 +5,9 @@ import ipaddress
 import json
 from datetime import datetime
 
-from sqlalchemy import insert, func
-
 from config.settings import settings
 from core.logger import logger
 from infrastructure.async_factory import BaseAsyncFactory
-from models.impression import Impression
 from utils.ip import format_ipv4_as_mapped_ipv6
 from utils.timer import StepTimer
 
@@ -22,16 +19,19 @@ class ImpressionConsumerService(BaseAsyncFactory):
     Consumes impression messages from RabbitMQ and inserts them into the database.
 
     Side effects:
-    - Creates a Redis key for impression deduplication.
+    - Creates a Redis key for webhit deduplication.
     - Stores the impression ID by IP and client for webhit correlation.
 
     Flow:
     - Receives valid impression from queue.
     - Extracts key fields, formats IP.
-    - Inserts into MariaDB.
+    - Only validation is, is it a valid impression, but it could also drop "banned client" data.
+    - Inserts into resolved_impressions_queue.
     - Sets Redis keys:
         - imp:{client}:{ip} = impression_id (1 week)
         - dedupe:webhit:{client}:{ip} = delete (reset webhit tracking)
+    - Does save to database "edge_data".
+    - All publish to database is done by the data warehouse.
     """
 
     def __init__(self, run_once=False):
@@ -161,12 +161,18 @@ class ImpressionConsumerService(BaseAsyncFactory):
         return all(k in q for k in ("client", "booking", "creative"))
 
     async def _handle_impression_batch(self, entries):
-        """Process impressions with optimal database, Redis, and message queue operations."""
-        values = []
+        """Process impressions with Redis ID generation and optimal message handling."""
         redis_updates = []
         publish_payloads = []
+        latest_timestamp = 0
 
-        for entry in entries:
+        # Get IDs in one batch operation for efficiency
+        pipe = self.redis.pipeline()
+        for _ in range(len(entries)):
+            pipe.incr("global:next_impression_id")
+        impression_ids = await pipe.execute()
+
+        for entry, impression_id in zip(entries, impression_ids):
             q = entry["query"]
             raw_ip = entry.get("client_ip", "").split(",")[0].strip()
 
@@ -177,14 +183,28 @@ class ImpressionConsumerService(BaseAsyncFactory):
                 logger.warning(f"[SKIP] Invalid IP: {raw_ip}")
                 continue
 
-            timestmp = datetime.fromisoformat(entry.get("timestamp")) if entry.get("timestamp") else func.now()
+            # Parse timestamp or use current time
+            if entry.get("timestamp"):
+                timestmp = datetime.fromisoformat(entry.get("timestamp"))
+                timestamp_float = timestmp.timestamp()
+                # Track the latest timestamp for chronological processing
+                latest_timestamp = max(latest_timestamp, timestamp_float)
+            else:
+                timestmp = datetime.now()
+                timestamp_float = timestmp.timestamp()
+                latest_timestamp = max(latest_timestamp, timestamp_float)
 
             client_id = int(q["client"])
             booking_id = int(q["booking"])
             creative_id = int(q["creative"])
 
-            values.append({
-                "timestmp": timestmp,
+            # Track Redis updates needed
+            redis_updates.append((client_id, ip, impression_id))
+
+            # Prepare payload for RabbitMQ with Redis-generated ID
+            publish_payloads.append({
+                "id": impression_id,
+                "timestamp": entry.get("timestamp") or timestmp.isoformat(),
                 "client_id": client_id,
                 "booking_id": booking_id,
                 "creative_id": creative_id,
@@ -192,38 +212,29 @@ class ImpressionConsumerService(BaseAsyncFactory):
                 "useragent": entry.get("user_agent", "")
             })
 
-            redis_updates.append((client_id, ip))
-            # In _handle_impression_batch method in impression_consumer.py
-            publish_payloads.append({
-                "timestamp": entry.get("timestamp"),
-                "client_id": client_id,
-                "booking_id": booking_id,
-                "creative_id": creative_id,
-                "ipaddress": ip,
-                "useragent": entry.get("user_agent", "")  # Add this line
-            })
-
-        # Insert into database
-        async with self.db.async_session_scope('TVFACTORY') as session:
-            stmt = insert(Impression).values(values).returning(Impression.id)
-            result = await session.execute(stmt)
-            ids = result.scalars().all()
-
-        # Update Redis with impression ID for correlation and dedupe
+        # Execute Redis updates in a single pipeline operation
         pipe = self.redis.pipeline()
-        for (client_id, ip), new_id in zip(redis_updates, ids):
+
+        # Update latest impression timestamp for webhit correlation
+        if latest_timestamp > 0:
+            pipe.set("latest_impression_timestamp", latest_timestamp)
+
+        # Set all the correlation and dedupe keys
+        for client_id, ip, impression_id in redis_updates:
             redis_key = f"imp:{client_id}:{ip}"
             dedupe_key = f"dedupe:webhit:{client_id}:{ip}"
-            pipe.setex(redis_key, settings.ONE_WEEK, new_id)
+            pipe.setex(redis_key, settings.ONE_WEEK, impression_id)
             pipe.delete(dedupe_key)
 
         await pipe.execute()
 
-        # Publish resolved impression message to RabbitMQ
-        for msg, impression_id in zip(publish_payloads, ids):
-            msg["id"] = impression_id
+        # Publish to RabbitMQ
+        for payload in publish_payloads:
             await self.rabbit.publish(
                 exchange="",
                 routing_key="resolved_impressions_queue",
-                message=msg
+                message=payload
             )
+
+        logger.info(
+            f"Processed {len(publish_payloads)} impressions with Redis IDs, latest timestamp: {latest_timestamp}")

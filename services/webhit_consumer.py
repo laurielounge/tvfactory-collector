@@ -4,17 +4,15 @@ import asyncio
 import json
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
-from sqlalchemy import func, select, and_, insert
+from sqlalchemy import func
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from config.settings import settings
 from core.logger import logger
 from infrastructure.async_factory import BaseAsyncFactory
-from models.impression import Impression, FinishedImpression
 from models.last_site_response import TargetLastSiteResponse
-from models.webhit import WebHit, FinishedWebHit
 from utils.ip import format_ipv4_as_mapped_ipv6
 from utils.timer import StepTimer
 
@@ -223,8 +221,19 @@ class WebhitConsumerService(BaseAsyncFactory):
 
     async def _handle_webhit_batch(self, entries: list[dict]):
         """
-        Processes webhits in efficient batches with pipelined Redis operations.
+        Processes webhits in efficient batches with timestamp-based processing control.
         """
+        # Get latest processed impression timestamp first
+        latest_imp_ts = await self.redis.get("latest_impression_timestamp")
+        if not latest_imp_ts:
+            latest_imp_ts = 0
+        else:
+            latest_imp_ts = float(latest_imp_ts)
+
+        logger.info(
+            f"Latest impression timestamp: {datetime.fromtimestamp(float(latest_imp_ts)).isoformat() if latest_imp_ts else None}")
+
+        # Update site hit counters
         today = datetime.now().date()
         for entry in entries:
             q = entry.get("query", {})
@@ -232,14 +241,13 @@ class WebhitConsumerService(BaseAsyncFactory):
                 try:
                     client_id = int(q["client"])
                     site_id = extract_leading_int(q["site"])
-
                     if client_id and site_id:
                         counter_key = (today, client_id, site_id)
                         self.site_hit_counters[counter_key] = self.site_hit_counters.get(counter_key, 0) + 1
                 except (ValueError, TypeError) as e:
                     logger.debug(f"Skipping counter for malformed entry: {e}")
 
-            # Check if we should flush counters
+        # Check if we should flush counters
         current_time = time.time()
         if current_time - self.last_counter_flush > self.counter_flush_interval:
             await self.flush_site_hit_counters()
@@ -247,29 +255,51 @@ class WebhitConsumerService(BaseAsyncFactory):
         # Phase 1: Gather impression IDs from Redis in one operation
         redis_keys = []
         entry_data = []
+        messages_to_process = []
 
         with self.timer.time("prepare_batch"):
-            for entry in entries:
+            for i, entry in enumerate(entries):
                 q = entry["query"]
                 raw_ip = entry.get("client_ip", "").split(",")[0].strip()
-                ip = format_ipv4_as_mapped_ipv6(raw_ip)
-                logger.debug(f"[PREPARE BATCH] Processing webhit q: {q} ip is {ip}")
-                client_id = int(q["client"])
-                site_id = extract_leading_int(q["site"])
-                ts = entry.get("timestamp")
-                logger.debug(
-                    f"[PREPARE BATCH AFTER SITE EXTRACT] Processing webhit {site_id=} {client_id=} {ip=} {ts=}")
-                if site_id is None:
-                    logger.warning(f"Invalid site ID: {q['site']} — skipping")
-                    return
 
                 try:
-                    timestmp = datetime.fromisoformat(entry.get("timestamp"))
+                    ip = format_ipv4_as_mapped_ipv6(raw_ip)
+                except ValueError:
+                    logger.warning(f"[SKIP] Invalid IP: {raw_ip}")
+                    continue
+
+                client_id = int(q["client"])
+                site_id = extract_leading_int(q["site"])
+
+                if site_id is None:
+                    logger.warning(f"Invalid site ID: {q['site']} — skipping")
+                    continue
+
+                try:
+                    if entry.get("timestamp"):
+                        timestmp = datetime.fromisoformat(entry.get("timestamp"))
+                        entry_ts = timestmp.timestamp()
+                    else:
+                        timestmp = datetime.now()
+                        entry_ts = timestmp.timestamp()
+
+                    # Check if this webhit is too recent - stop processing if so
+                    if entry_ts > latest_imp_ts:
+                        logger.info(f"Stopping batch processing at index {i}/{len(entries)} - "
+                                    f"reached webhit newer than latest impression "
+                                    f"({datetime.fromtimestamp(entry_ts).isoformat()} > "
+                                    f"{datetime.fromtimestamp(float(latest_imp_ts)).isoformat() if latest_imp_ts else None})")
+                        break
                 except Exception:
-                    timestmp = func.now()
-                logger.debug(f"[PREPARE BATCH] Processing webhit {site_id=} {client_id=} {ip=} {timestmp=}")
+                    timestmp = datetime.now()
+
                 redis_keys.append(f"imp:{client_id}:{ip}")
                 entry_data.append((entry, client_id, ip, site_id, timestmp))
+                messages_to_process.append(i)
+
+        # If no valid entries to process
+        if not entry_data:
+            return 0
 
         # Phase 2: Efficient Redis lookups with pipelining
         with self.timer.time("redis_lookup"):
@@ -278,120 +308,60 @@ class WebhitConsumerService(BaseAsyncFactory):
                 pipe.get(key)
             impression_results = await pipe.execute()
 
-        # Phase 3: Process entries with DB lookups and insertions
-        with self.timer.time("db_processing"):
-            async with self.db.async_session_scope('TVFACTORY') as db:
-                for (entry, client_id, ip, site_id, timestmp), redis_imp_id in zip(entry_data, impression_results):
-                    await self._process_single_webhit_impl(db, client_id, ip, site_id, timestmp, redis_imp_id)
+        # Phase 3: Process entries with Redis ID generation
+        with self.timer.time("processing"):
+            processed_count = 0
+            for (entry, client_id, ip, site_id, timestmp), redis_imp_id in zip(entry_data, impression_results):
+                result = await self._process_single_webhit_impl_redis(client_id, ip, site_id, timestmp, redis_imp_id)
+                if result:
+                    processed_count += 1
 
-    async def _process_single_webhit_impl(self, db, client_id, ip, site_id, timestmp, redis_imp_id):
-        """Process a single webhit with optimized database and Redis operations."""
+        logger.info(f"Processed {processed_count}/{len(entry_data)} webhits, skipped rest due to timestamp cutoff")
+        return processed_count
+
+    async def _process_single_webhit_impl_redis(self, client_id, ip, site_id, timestmp, redis_imp_id):
+        """Process a single webhit with Redis ID generation and optimized operations."""
         impression_id = int(redis_imp_id) if redis_imp_id else None
-        seven_days_ago = timestmp - timedelta(days=7)
-        last_24_hours = timestmp - timedelta(days=1)
 
-        logger.debug(
-            f"[PROCESS SINGLE] Processing webhit for client {client_id}, site {site_id}, IP {ip} with impression ID {impression_id}")
-        # DB lookup if necessary
-        row = None
+        # If no impression found, skip this webhit
         if not impression_id:
-            try:
-                with self.timer.time("db_impression_lookup"):
+            return False
 
-                    result = await db.execute(
-                        select(Impression.id).where(
-                            and_(
-                                Impression.client_id == client_id,
-                                Impression.ipaddress == ip,
-                                Impression.timestmp > seven_days_ago,
-                            )
-                        ).order_by(Impression.timestmp.desc()).limit(1)
-                    )
-                    row = result.scalars().first()
-
-                    if not row:
-                        result = await db.execute(
-                            select(FinishedImpression.id).where(
-                                and_(
-                                    FinishedImpression.client_id == client_id,
-                                    FinishedImpression.ipaddress == ip,
-                                    FinishedImpression.timestmp > seven_days_ago,
-                                )
-                            ).order_by(FinishedImpression.timestmp.desc()).limit(1)
-                        )
-                        row = result.scalars().first()
-                        if not row:
-                            return
-                    impression_id = row
-            except Exception as e:
-                logger.warning(f"[GET IMPRESSION QUERY ERROR] {e}")
-                return
-        logger.debug(f"[PROCESS SINGLE] Impression lookup result: {row}")
-        # Deduplication checks - Redis first, then DB if needed
+        # Deduplication check via Redis
         dedupe_key = f"dedupe:webhit:{client_id}:{ip}"
+        seen_sites = await self.redis.smembers(dedupe_key)
 
-        with self.timer.time("deduplication"):
-            # Redis deduplication
-            seen_sites = await self.redis.smembers(dedupe_key)
-            logger.debug(f"[PROCESS SINGLE] Redis deduplication check: {seen_sites=}")
-            if str(site_id) in seen_sites:
-                logger.debug(f"[PROCESS SINGLE] Redis deduplication failed for {client_id=} {ip=} {site_id=}")
-                return
-            logger.debug(f"[PROCESS SINGLE] Redis deduplication passed for {client_id=} {ip=} {site_id=}")
-            # DB deduplication
-            result = await db.execute(
-                select(FinishedWebHit.id).where(
-                    and_(
-                        FinishedWebHit.impression_id == impression_id,
-                        FinishedWebHit.site_id == site_id,
-                        FinishedWebHit.timestmp > last_24_hours,
-                    )
-                )
-            )
-            if result.scalars().first():
-                return
+        if str(site_id) in seen_sites:
+            logger.debug(f"Redis deduplication failed for {client_id=} {ip=} {site_id=}")
+            return False
 
-        # Insert webhit and update Redis
-        logger.debug("[PROCESS SINGLE] Inserting new webhit")
-        with self.timer.time("insertion"):
-            try:
-                result = await db.execute(
-                    insert(WebHit).values(
-                        impression_id=impression_id,
-                        client_id=client_id,
-                        site_id=site_id,
-                        ipaddress=ip,
-                        timestmp=timestmp,
-                    ).returning(WebHit.id)
-                )
-                webhit_id = result.scalar_one()
-                await db.commit()
+        # Get webhit ID from Redis
+        webhit_id = await self.redis.incr("global:next_webhit_id")
 
-                # Publish to RabbitMQ
-                payload = {
-                    "id": webhit_id,
-                    "impression_id": impression_id,
-                    "client_id": client_id,
-                    "site_id": site_id,
-                    "ipaddress": ip,
-                    "timestamp": timestmp.isoformat() if isinstance(timestmp, datetime) else str(timestmp),
-                }
+        # Update Redis deduplication
+        pipe = self.redis.pipeline()
+        pipe.sadd(dedupe_key, site_id)
+        pipe.expire(dedupe_key, settings.ONE_DAY)
+        await pipe.execute()
 
-                await self.rabbit.publish(
-                    exchange="",
-                    routing_key="resolved_webhits_queue",
-                    message=payload
-                )
+        # Publish to RabbitMQ
+        payload = {
+            "id": webhit_id,
+            "impression_id": impression_id,
+            "client_id": client_id,
+            "site_id": site_id,
+            "ipaddress": ip,
+            "timestamp": timestmp.isoformat() if isinstance(timestmp, datetime) else str(timestmp),
+        }
 
-            except Exception as e:
-                logger.warning(f"[INSERT ERROR] {e}")
-                return
+        await self.rabbit.publish(
+            exchange="",
+            routing_key="resolved_webhits_queue",
+            message=payload
+        )
 
-            # Redis deduplication update
-            pipe = self.redis.pipeline()
-            pipe.sadd(dedupe_key, site_id)
-            pipe.expire(dedupe_key, settings.ONE_DAY)
-            await pipe.execute()
+        logger.debug(f"Processed webhit {webhit_id} for impression {impression_id}, client {client_id}, site {site_id}")
+        return True
 
     async def flush_site_hit_counters(self):
         """Flush site hit counters using SQLAlchemy's MySQL dialect"""

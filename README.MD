@@ -31,17 +31,9 @@ The Collector Service sits at the beginning of the Infinitum data pipeline, eleg
 
 ## Service Components
 
-### LogCollectorService
-This component retrieves logs with a deft touch:
-- Performs SSH connections to edge servers (via port 822)
-- Extracts log entries from `/var/log/nginx/shadow_pipeline.log`
-- Detects log rotation through hash comparisons
-- Maintains progress state in Redis (`logstate:<hostname>`)
-- Pushes raw log entries to Redis list (`loghit_queue`)
-
 ### LoghitWorkerService
 Efficiently processes logs with minimal fuss:
-- Consumes entries from Redis `loghit_queue`
+- Consumes entries from Redis `loghit_queue`, fed by the vector service on the edge servers
 - Classifies each entry as either "impression" or "webhit"
 - Routes entries to appropriate RabbitMQ queues
 - Handles batch processing for optimal throughput
@@ -51,7 +43,7 @@ Processes advertising impressions with sophisticated precision:
 - Consumes messages from `raw_impressions_queue`
 - Validates impression data (client, booking, creative)
 - Normalizes IP addresses
-- Inserts records into TVFACTORY database
+- Inserts records into TVFACTORY database edge_data, primarily to get ids, adds the ids to the records 
 - Creates correlation keys in Redis (`imp:{client}:{ip}`)
 - Publishes processed impressions to `resolved_impressions_queue`
 
@@ -60,7 +52,7 @@ Handles website visits with refined correlation capabilities:
 - Consumes messages from `raw_webhits_queue`
 - Correlates visits with impressions using Redis or database lookups
 - Prevents duplicate processing through Redis deduplication
-- Inserts validated records into TVFACTORY database
+- Inserts validated records into TVFACTORY database edge_data, primarily to get ids, adds the ids to the records
 - Publishes processed webhits to `resolved_webhits_queue`
 
 ## Data Flow
@@ -74,7 +66,7 @@ flowchart TD
     classDef database fill:#f5b7b1,stroke:#333,stroke-width:1px
 
     Logs["Nginx Logs"]:::edge
-    LogCollector["LogCollectorService"]:::process
+    Vector["VectorService"]:::process
     LogQueue["Redis: loghit_queue"]:::redis
     LoghitWorker["LoghitWorkerService"]:::process
     RawImpQueue["RabbitMQ: raw_impressions_queue"]:::rabbit
@@ -86,8 +78,7 @@ flowchart TD
     ResolvedImpQueue["RabbitMQ: resolved_impressions_queue"]:::rabbit
     ResolvedWebQueue["RabbitMQ: resolved_webhits_queue"]:::rabbit
 
-    Logs -->|SSH fetch| LogCollector
-    LogCollector -->|Push| LogQueue
+    Logs -->|Vector Push| LogQueue
     LogQueue -->|Pop & classify| LoghitWorker
     LoghitWorker -->|Impressions| RawImpQueue
     LoghitWorker -->|Webhits| RawWebQueue
@@ -105,7 +96,6 @@ flowchart TD
 ## Execution Modes
 
 The service has multiple operating roles:
-- `collector`: Runs log fetching from nginx servers
 - `loghit`: Processes Redis queue entries into RabbitMQ
 - `impression`: Processes impression events from RabbitMQ
 - `webhit`: Processes website visit events from RabbitMQ
@@ -123,7 +113,6 @@ The collector service demonstrates an elegant approach to data acquisition and i
 - Graceful handling of log rotation
 
 **Points of Refinement:**
-- The SSH command execution appears blocking rather than asynchronous
 - Some direct coupling between components that could use further abstraction
 - Potentially excessive Redis key usage for high-volume traffic
 

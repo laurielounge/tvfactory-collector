@@ -56,7 +56,7 @@ class LoghitWorkerService(BaseAsyncFactory):
             return 0
 
         # Override batch size for intense debugging
-        logger.info(f"Retrieving debug batch of {batch_size} messages")
+        logger.info(f"Retrieving batch of {batch_size} messages")
         messages = await self.rabbit.get_batch(self.queue_name, batch_size)
 
         if not messages:

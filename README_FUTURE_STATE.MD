@@ -19,6 +19,10 @@
 │ │ local disk  │ │          │                 │          │  │ Consumer  │  │
 │ │ buffer      │ │          │                 │          │  └───────────┘  │
 │ └─────────────┘ │          │                 │          │                 │
+|                 │          │                 │          │  ┌───────────┐  │        
+|                 │          │                 │          │  │ Webhit    │  │        
+|                 │          │                 │          │  | Consumer  │  |    
+|                 │          │                 │          │  └───────────┘  │        
 └─────────────────┘          └─────────────────┘          └─────────────────┘
 ```
 
@@ -35,43 +39,81 @@ replacement for traditional log shippers with reliability built in:
     - Transmit directly to your existing RabbitMQ
 
 2. **Vector Configuration** (vector.toml):
-   ```toml
-   [sources.nginx_logs]
-   type = "file"
-   include = ["/var/log/nginx/shadow_pipeline.log"]
-   ignore_older = 86400  # 1 day
+   ```yaml
+#                                    __   __  __
+#                                    \ \ / / / /
+#                                     \ V / / /
+#                                      \_/  \/
+#
+#                                    V E C T O R
+#                                   Configuration
+#
+# ------------------------------------------------------------------------------
+# Website: https://vector.dev
+# Docs: https://vector.dev/docs
+# Chat: https://chat.vector.dev
+# ------------------------------------------------------------------------------
 
-   [transforms.filter_paths]
-   type = "filter"
-   inputs = ["nginx_logs"]
-   condition = 'includes(["client", "response", "impression", "viewer"], parse_regex(.message, "^.*\\s(GET|POST)\\s/(?P<path>[^\\s?]+)").path)'
+# Change this to use a non-default directory for Vector data storage:
+# data_dir: "/var/lib/vector"
 
-   [transforms.parse_nginx]
-   type = "remap"
-   inputs = ["filter_paths"]
-   source = '''
-   . = parse_nginx_log(.message)
-   .hostname = get_hostname()
-   .timestamp = now()
-   '''
+# Random Syslog-formatted logs
+# Vector configuration for Infinitum log shipping
+# Vector configuration for Infinitum log shipping
+# Vector configuration for Infinitum log shipping
+# Vector configuration for Infinitum log shipping
+data_dir: "/var/lib/vector"
 
-   [sinks.rabbitmq_output]
-   type = "amqp"
-   inputs = ["parse_nginx"]
-   url = "amqp://user:password@rabbitmq-server:5672/%2F"
-   exchange = ""
-   routing_key = "loghit_queue"
-   persistent = true  # Critical for reliability
-   
-   # Sophisticated error handling with retry
-   retry_initial_backoff_secs = 1
-   retry_max_backoff_secs = 300
-   retry_max_duration_secs = 86400  # Retry for up to 1 day
-   
-   # Local buffer to prevent data loss
-   buffer.type = "disk"
-   buffer.max_size = 1073741824  # 1GB local buffer
-   buffer.when_full = "block"    # Backpressure rather than drop
+# Watch the nginx shadow_pipeline.log file
+sources:
+  nginx_logs:
+    type: "file"
+    include:
+      - "/var/log/nginx/shadow_pipeline.log"
+    ignore_older: 86400  # 1 day
+
+# Process logs with a simple transform
+transforms:
+  process_logs:
+    type: "remap"
+    inputs: ["nginx_logs"]
+    source: |
+      # Only keep lines with our relevant paths
+      if !match!(.message, r'(GET|POST)\s+/(client|response|impression|viewer)') {
+        abort
+      }
+      
+      # Parse the custom shadow_pipeline format
+      parsed = parse_regex!(.message, r'^(?P<timestamp>[^\t]+)\t(?P<edge_ip>[^\t]+)\t(?P<method>[^\t]+)\t(?P<path>[^\t]+)\t(?P<query_string>[^\t]+)\t(?P<status>[^\t]+)\t(?P<user_agent>[^\t]*)\t(?P<referer>[^\t]*)\t(?P<client_ip>[^\t]*)$')
+      
+      # Add the parsed fields to the event
+      . = merge(., parsed)
+      
+      # Add hostname
+      host, err = get_hostname()
+      if err == null {
+        .hostname = host
+      } else {
+        .hostname = "unknown"
+      }
+
+# Send to RabbitMQ
+sinks:
+  rabbitmq_output:
+    type: "amqp"
+    inputs: ["process_logs"]
+    encoding:
+      codec: "json"
+    connection_string: "amqp://infinitum_admin:m3d1ac0@10.0.0.112:5672/infinitum_vhost"
+    exchange: ""
+    routing_key: "loghit_queue"
+    persistent: true
+    
+    # Local buffer settings for reliability
+    buffer:
+      type: "disk"
+      max_size: 1073741824  # 1GB
+      when_full: "block"
    ```
 
 3. **Key Benefits**:
