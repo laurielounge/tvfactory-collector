@@ -97,13 +97,13 @@ def process_log_payload(raw_json: str) -> tuple[str, dict] | None:
     """Process log payload with optimized error handling"""
     try:
         payload = json.loads(raw_json)
-        logger.info(f"Payload is {payload}")
+        logger.debug(f"Payload is {payload}")
         # Fast path for missing fields
         if not all(k in payload for k in ("raw", "host", "line_num")):
             return None
 
         entry = parse_log_line(payload["raw"])
-        logger.info(f"Entry is {entry}")
+        logger.debug(f"Entry is {entry}")
         if not entry:
             return None
 
@@ -112,12 +112,12 @@ def process_log_payload(raw_json: str) -> tuple[str, dict] | None:
 
         # Inline query parsing to reduce function calls
         entry["query"] = parse_query_string(entry["query_string"])
-        logger.info(f"Entry is now {entry}")
+        logger.debug(f"Entry is now {entry}")
 
         category = classify_entry(entry)
-        logger.info(f"Category is {category}")
+        logger.debug(f"Category is {category}")
         if not category:
-            logger.info(f"No category found for {entry}")
+            logger.debug(f"No category found for {entry}")
             return None
 
         return category, entry

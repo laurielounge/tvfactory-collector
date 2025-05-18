@@ -54,7 +54,7 @@ def process_vector_payload(payload: dict) -> tuple[str, dict] | None:
             query_params.get("booking") or query_params.get("campaign") or query_params.get("b")) else None
     creative = (query_params.get("creative", []) + query_params.get("r", []))[0] if (
             query_params.get("creative") or query_params.get("r")) else None
-    logger.info(f"Query params are {client=} {site=} {booking=} {creative=}")
+    logger.debug(f"Query params are {client=} {site=} {booking=} {creative=}")
     # Extract leading integers from any found values
     if client: client = extract_leading_int(client)
     if site: site = extract_leading_int(site)

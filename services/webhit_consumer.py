@@ -3,14 +3,17 @@
 import asyncio
 import json
 import re
+import time
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, select, and_, insert
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from config.settings import settings
 from core.logger import logger
 from infrastructure.async_factory import BaseAsyncFactory
 from models.impression import Impression, FinishedImpression
+from models.last_site_response import TargetLastSiteResponse
 from models.webhit import WebHit, FinishedWebHit
 from utils.ip import format_ipv4_as_mapped_ipv6
 from utils.timer import StepTimer
@@ -41,7 +44,11 @@ class WebhitConsumerService(BaseAsyncFactory):
         self.queue_name = "raw_webhits_queue"
         self.timer = StepTimer()
         self.run_once = run_once
-        logger.info("WebhitConsumerService initialized")
+        # Site activity tracking
+        self.site_hit_counters = {}  # Format: {(date, client_id, site_id): count}
+        self.last_counter_flush = time.time()
+        self.counter_flush_interval = 60  # Seconds
+        logger.info("WebhitConsumerService initialized with site activity tracking")
 
     async def service_setup(self):
         """Service-specific setup after connections established."""
@@ -50,6 +57,13 @@ class WebhitConsumerService(BaseAsyncFactory):
             await self.rabbit.declare_queue(self.queue_name, durable=True)
             await self.rabbit.declare_queue("resolved_webhits_queue", durable=True)
         logger.info("WebhitConsumerService setup complete")
+
+    # Override stop method to ensure counters are flushed
+    async def stop(self):
+        """Gracefully stops the service and flushes remaining counters."""
+        if self.site_hit_counters:
+            await self.flush_site_hit_counters()
+        await super().stop()
 
     async def process_batch(self, batch_size=MAX_MESSAGES, timeout=30.0):
         """
@@ -211,6 +225,25 @@ class WebhitConsumerService(BaseAsyncFactory):
         """
         Processes webhits in efficient batches with pipelined Redis operations.
         """
+        today = datetime.now().date()
+        for entry in entries:
+            q = entry.get("query", {})
+            if "client" in q and "site" in q:
+                try:
+                    client_id = int(q["client"])
+                    site_id = extract_leading_int(q["site"])
+
+                    if client_id and site_id:
+                        counter_key = (today, client_id, site_id)
+                        self.site_hit_counters[counter_key] = self.site_hit_counters.get(counter_key, 0) + 1
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Skipping counter for malformed entry: {e}")
+
+            # Check if we should flush counters
+        current_time = time.time()
+        if current_time - self.last_counter_flush > self.counter_flush_interval:
+            await self.flush_site_hit_counters()
+
         # Phase 1: Gather impression IDs from Redis in one operation
         redis_keys = []
         entry_data = []
@@ -359,3 +392,38 @@ class WebhitConsumerService(BaseAsyncFactory):
             pipe.sadd(dedupe_key, site_id)
             pipe.expire(dedupe_key, settings.ONE_DAY)
             await pipe.execute()
+
+    async def flush_site_hit_counters(self):
+        """Flush site hit counters using SQLAlchemy's MySQL dialect"""
+        if not self.site_hit_counters:
+            return
+
+        current_counters = self.site_hit_counters.copy()
+        self.site_hit_counters = {}
+        self.last_counter_flush = time.time()
+
+        try:
+            async with self.db.async_session_scope('TVFACTORY') as session:
+                for (date, client_id, site_id), hits in current_counters.items():
+                    # MySQL-specific insert with on duplicate key update
+                    insert_stmt = mysql_insert(TargetLastSiteResponse).values(
+                        date=date,
+                        client_id=client_id,
+                        sitetag_id=site_id,
+                        hits=hits
+                    )
+
+                    # The elegant part - on duplicate key update
+                    upsert_stmt = insert_stmt.on_duplicate_key_update(
+                        hits=TargetLastSiteResponse.hits + hits
+                    )
+
+                    await session.execute(upsert_stmt)
+
+                await session.commit()
+                logger.info(f"Site activity: flushed {len(current_counters)} counters to database")
+        except Exception as e:
+            logger.error(f"Error flushing site activity counters: {e}")
+            # Recover gracefully
+            for key, count in current_counters.items():
+                self.site_hit_counters[key] = self.site_hit_counters.get(key, 0) + count
