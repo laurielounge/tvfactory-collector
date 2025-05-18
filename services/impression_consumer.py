@@ -193,12 +193,14 @@ class ImpressionConsumerService(BaseAsyncFactory):
             })
 
             redis_updates.append((client_id, ip))
+            # In _handle_impression_batch method in impression_consumer.py
             publish_payloads.append({
                 "timestamp": entry.get("timestamp"),
                 "client_id": client_id,
                 "booking_id": booking_id,
                 "creative_id": creative_id,
-                "ipaddress": ip
+                "ipaddress": ip,
+                "useragent": entry.get("user_agent", "")  # Add this line
             })
 
         # Insert into database
