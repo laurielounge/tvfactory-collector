@@ -34,7 +34,8 @@ class Settings:
     REDIS_PORT = os.getenv("REDIS_PORT")
     REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
     REDIS_TIMEOUT = os.getenv("REDIS_TIMEOUT")
-
+    LOW_VOLUME_THRESHOLD: int = int(os.getenv("LOW_VOLUME_THRESHOLD", 30))
+    LOW_VOLUME_PAUSE_SECONDS: int = int(os.getenv("LOW_VOLUME_PAUSE_SECONDS", 10))
     SQL_ECHO = False
 
     # Constructing the connection strings

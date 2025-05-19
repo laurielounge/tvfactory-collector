@@ -7,6 +7,7 @@ import time
 
 from dotenv import load_dotenv
 
+from config.settings import settings
 from core.logger import logger
 from infrastructure.async_factory import BaseAsyncFactory
 from services.impression_consumer import ImpressionConsumerService
@@ -83,47 +84,46 @@ async def run_sequence(run_once=False):
 
     async def sequence_loop():
         while True:
-            # Phase 1: Process loghit_queue with bounds
+            # Phase 1: Process loghit_queue
             logger.info("[SEQUENCE] Processing loghit_queue (max 30 seconds)")
             count = 0
-            max_items = 20000  # Process at most this many items per cycle
+            max_items = 20000
             start_time = time.time()
-            max_duration = 30  # seconds
+            max_duration = 30
 
             while (time.time() - start_time < max_duration) and (count < max_items):
                 batch_count = await loghit_worker.process_batch(batch_size=500)
-                if batch_count == 0:
-                    # If no items processed in this batch, small pause then try once more
-                    await asyncio.sleep(0.5)
-                    batch_count = await loghit_worker.process_batch(batch_size=500)
-                    if batch_count == 0:
-                        break  # Queue is empty after retrying
                 count += batch_count
 
-            duration = time.time() - start_time
-            logger.info(f"[SEQUENCE] Processed {count} log entries in {duration:.1f}s ({count / duration:.1f}/s if >0)")
+                if batch_count < settings.LOW_VOLUME_THRESHOLD:
+                    logger.info(f"[SEQUENCE] Loghit processed low-volume batch ({batch_count}). Pausing.")
+                    await asyncio.sleep(settings.LOW_VOLUME_PAUSE_SECONDS)
+                    break
 
-            # Phase 2: Process impressions queue with bounds
+            duration = time.time() - start_time
+            logger.info(f"[SEQUENCE] Processed {count} log entries in {duration:.1f}s ({count / duration:.1f}/s)")
+
+            # Phase 2: Process impressions
             logger.info("[SEQUENCE] Processing raw_impressions_queue")
             imp_count = 0
             imp_start = time.time()
-            max_imp_time = 30  # seconds
+            max_imp_time = 30
+
             try:
                 queue_length = await loghit_worker.rabbit.get_queue_length("raw_impressions_queue")
+                logger.info(f"[SEQUENCE] Found {queue_length} impressions to process")
             except Exception as e:
-                logger.error(f"Error getting queue length: {e}")
+                logger.error(f"Error getting impression queue length: {e}")
                 queue_length = 0
-            logger.info(f"[SEQUENCE] Found {queue_length} impressions to process")
 
-            while queue_length > 0 and (time.time() - imp_start < max_imp_time) and (imp_count < max_items):
+            while (time.time() - imp_start < max_imp_time) and (imp_count < max_items):
                 batch_count = await impression_service.process_batch(batch_size=500)
-                if batch_count == 0:
-                    break
                 imp_count += batch_count
 
-                # Only check queue length every few batches to reduce overhead
-                if imp_count % 2000 == 0:
-                    queue_length = await loghit_worker.rabbit.get_queue_length("raw_impressions_queue")
+                if batch_count < settings.LOW_VOLUME_THRESHOLD:
+                    logger.info(f"[SEQUENCE] Low-volume impression batch ({batch_count}). Pausing.")
+                    await asyncio.sleep(settings.LOW_VOLUME_PAUSE_SECONDS)
+                    break
 
             imp_duration = time.time() - imp_start
             if imp_count > 0:
@@ -132,24 +132,27 @@ async def run_sequence(run_once=False):
             else:
                 logger.info("[SEQUENCE] No impressions processed")
 
-            # Phase 3: Process webhits queue with bounds
+            # Phase 3: Process webhits
             logger.info("[SEQUENCE] Processing raw_webhits_queue")
             hit_count = 0
             hit_start = time.time()
-            max_hit_time = 30  # seconds
+            max_hit_time = 30
 
-            queue_length = await loghit_worker.rabbit.get_queue_length("raw_webhits_queue")
-            logger.info(f"[SEQUENCE] Found {queue_length} webhits to process")
+            try:
+                queue_length = await loghit_worker.rabbit.get_queue_length("raw_webhits_queue")
+                logger.info(f"[SEQUENCE] Found {queue_length} webhits to process")
+            except Exception as e:
+                logger.error(f"Error getting webhits queue length: {e}")
+                queue_length = 0
 
-            while queue_length > 0 and (time.time() - hit_start < max_hit_time) and (hit_count < max_items):
+            while (time.time() - hit_start < max_hit_time) and (hit_count < max_items):
                 batch_count = await webhit_service.process_batch(batch_size=500)
-                if batch_count == 0:
-                    break
                 hit_count += batch_count
 
-                # Only check queue length every few batches to reduce overhead
-                if hit_count % 2000 == 0:
-                    queue_length = await loghit_worker.rabbit.get_queue_length("raw_webhits_queue")
+                if batch_count < settings.LOW_VOLUME_THRESHOLD:
+                    logger.info(f"[SEQUENCE] Low-volume webhits batch ({batch_count}). Pausing.")
+                    await asyncio.sleep(settings.LOW_VOLUME_PAUSE_SECONDS)
+                    break
 
             hit_duration = time.time() - hit_start
             if hit_count > 0:
@@ -158,13 +161,12 @@ async def run_sequence(run_once=False):
             else:
                 logger.info("[SEQUENCE] No webhits processed")
 
-            # Exit if run_once and we've processed something
+            # Exit if --run-once and something was processed
             if run_once and (count > 0 or imp_count > 0 or hit_count > 0):
                 break
 
-            # Shorter sleep between cycles for responsiveness
             logger.info("[SEQUENCE] Sleeping before next cycle")
-            await asyncio.sleep(5)  # Shortened from 30s for more frequent processing
+            await asyncio.sleep(5)
 
     try:
         await sequence_loop()
@@ -195,7 +197,7 @@ async def run_pipeline(num_workers=3):
     # Start all services in parallel
     await asyncio.gather(
         loghit_service.start(batch_size=5000, interval_seconds=1),
-        impression_service.start(batch_size=5000,interval_seconds=5),
+        impression_service.start(batch_size=5000, interval_seconds=5),
         webhit_service.start(batch_size=5000, interval_seconds=5)
     )
 
