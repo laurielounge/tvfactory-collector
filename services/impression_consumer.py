@@ -10,7 +10,7 @@ from core.logger import logger
 from infrastructure.async_factory import BaseAsyncFactory
 from utils.ip import format_ipv4_as_mapped_ipv6
 from utils.timer import StepTimer
-
+from models.impression import Impression
 MAX_MESSAGES = 5000
 
 
