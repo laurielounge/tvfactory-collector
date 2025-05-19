@@ -195,7 +195,7 @@ async def run_pipeline(num_workers=3):
     # Start all services in parallel
     await asyncio.gather(
         loghit_service.start(batch_size=5000, interval_seconds=1),
-        impression_service.start(interval_seconds=5),
+        impression_service.start(batch_size=5000,interval_seconds=5),
         webhit_service.start(batch_size=5000, interval_seconds=5)
     )
 

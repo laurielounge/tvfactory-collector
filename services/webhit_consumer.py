@@ -229,6 +229,7 @@ class WebhitConsumerService(BaseAsyncFactory):
         impression_id = await self.redis.get(imp_key)
 
         if impression_id:
+            logger.debug(f"We found a redis match with key imp:{client_id}:{ip}")
             impression_id = int(impression_id)
             dedupe_key = f"dedupe:webhit:{client_id}:{ip}"
             seen_sites = await self.redis.smembers(dedupe_key)
@@ -251,7 +252,7 @@ class WebhitConsumerService(BaseAsyncFactory):
                             and_(
                                 Impression.client_id == client_id,
                                 Impression.ipaddress == ip,
-                                Impression.timestmp > seven_days_ago
+                                Impression.timestmp > seven_days_ago,
                             )
                         ).order_by(Impression.timestmp.desc()).limit(1)
                     )

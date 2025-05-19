@@ -79,6 +79,7 @@ def process_vector_payload(payload: dict) -> tuple[str, dict] | None:
         logger.debug("Definitely a webhit")
         category = "webhit"
     else:
+        logger.debug("Path not identified")
         return None
     # Extract and format IP
     raw_ip = payload.get("client_ip", "").split(",")[0].strip()

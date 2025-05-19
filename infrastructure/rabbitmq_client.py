@@ -69,12 +69,14 @@ class AsyncRabbitMQClient:
             await self.connect()
 
         # Declare input queues
-        await self.channel.declare_queue('impressions_queue', durable=True)
-        await self.channel.declare_queue('webhits_queue', durable=True)
+        await self.channel.declare_queue('raw_impressions_queue', durable=True)
+        await self.channel.declare_queue('raw_webhits_queue', durable=True)
         # Declare result queues
         await self.channel.declare_queue('resolved_impressions_queue', durable=True)
         await self.channel.declare_queue('resolved_webhits_queue', durable=True)
 
+        await self.channel.declare_queue('enhanced_impressions_queue', durable=True)
+        await self.channel.declare_queue('enhanced_webhits_queue', durable=True)
     async def declare_queue(self, queue_name, durable=True) -> None:
         """Declare our standard set of queues with appropriate durability."""
         if not self.channel:
