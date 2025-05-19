@@ -224,21 +224,21 @@ class WebhitConsumerService(BaseAsyncFactory):
 
         # Redis keys
         imp_key = f"imp:{client_id}:{ip}"
-
+        dedupe_key = f"dedupe:webhit:{client_id}:{ip}"
         # --- Step 1: Fast-path Redis check ---
         impression_id = await self.redis.get(imp_key)
 
         if impression_id:
-            logger.debug(f"We found a redis match with key imp:{client_id}:{ip}")
+            logger.info(f"We found a redis match with key imp:{client_id}:{ip}")
             impression_id = int(impression_id)
-            dedupe_key = f"dedupe:webhit:{client_id}:{ip}"
+
             seen_sites = await self.redis.smembers(dedupe_key)
 
             if str(site_id) in seen_sites:
-                logger.debug(f"[DEDUPE REDIS] Site already seen: client={client_id}, ip={ip}, site_id={site_id}")
+                logger.info(f"[DEDUPE REDIS] Site already seen: client={client_id}, ip={ip}, site_id={site_id}")
                 return False
 
-            logger.debug(f"[MATCH REDIS] client={client_id}, ip={ip}, imp_id={impression_id}, site_id={site_id}")
+            logger.info(f"[MATCH REDIS] client={client_id}, ip={ip}, imp_id={impression_id}, site_id={site_id}")
 
         else:
             # --- Step 2: Fallback to DB ---
