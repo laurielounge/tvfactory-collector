@@ -152,7 +152,7 @@ class WebhitConsumerService(BaseAsyncFactory):
                         self.site_hit_counters[counter_key] = self.site_hit_counters.get(counter_key, 0) + 1
 
                         # Process the webhit
-                        result = await self._process_webhit_db_fallback(
+                        result = await self._process_webhit_find_impression(
                             client_id, ip, site_id, datetime.fromtimestamp(entry_ts))
 
                         if result:
@@ -218,7 +218,7 @@ class WebhitConsumerService(BaseAsyncFactory):
         logger.debug(f"[IS VALID WEBHIT] Query string was {q} and was {all(k in q for k in ('client', 'site') if q)}")
         return all(k in q for k in ("client", "site"))
 
-    async def _process_webhit_db_fallback(self, client_id, ip, site_id, timestmp, redis_imp_id):
+    async def _process_webhit_find_impression(self, client_id, ip, site_id, timestmp, redis_imp_id):
         """Process a webhit with database fallback for impression correlation."""
         # Step 1: Check Redis for impression ID
         impression_id = int(redis_imp_id) if redis_imp_id else None
