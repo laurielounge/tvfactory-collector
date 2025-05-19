@@ -1,8 +1,10 @@
 # services/vector_processor.py
+import ipaddress
 import re
 from urllib.parse import parse_qs
 
 from core.logger import logger
+from utils.ip import format_ipv4_as_mapped_ipv6
 
 # Precompile regex patterns for performance
 INT_HEAD = re.compile(r"^\d+")
@@ -78,12 +80,21 @@ def process_vector_payload(payload: dict) -> tuple[str, dict] | None:
         category = "webhit"
     else:
         return None
+    # Extract and format IP
+    raw_ip = payload.get("client_ip", "").split(",")[0].strip()
+    try:
+        ipaddress.ip_address(raw_ip)
+        ip = format_ipv4_as_mapped_ipv6(raw_ip)
+    except ValueError:
+        logger.warning(f"[SKIP] Invalid IP: {raw_ip}")
+        return None  # ← drop it upstream, no need to enqueue
 
     # Build entry object for downstream
     entry = {
         # Include original fields needed downstream
         "timestamp": payload.get("timestamp"),
-        "client_ip": payload.get("client_ip"),
+        "ipaddress": ip,
+        "client_ip": raw_ip,
         "user_agent": payload.get("user_agent"),
         "host": payload.get("hostname"),
         "path": path,

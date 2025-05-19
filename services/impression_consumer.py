@@ -174,14 +174,6 @@ class ImpressionConsumerService(BaseAsyncFactory):
 
         for entry, impression_id in zip(entries, impression_ids):
             q = entry["query"]
-            raw_ip = entry.get("client_ip", "").split(",")[0].strip()
-
-            try:
-                ipaddress.ip_address(raw_ip)
-                ip = format_ipv4_as_mapped_ipv6(raw_ip)
-            except ValueError:
-                logger.warning(f"[SKIP] Invalid IP: {raw_ip}")
-                continue
 
             # Parse timestamp or use current time
             if entry.get("timestamp"):
@@ -197,8 +189,7 @@ class ImpressionConsumerService(BaseAsyncFactory):
             client_id = int(q["client"])
             booking_id = int(q["booking"])
             creative_id = int(q["creative"])
-
-            # Track Redis updates needed
+            ip = entry["ipaddress"]
             redis_updates.append((client_id, ip, impression_id))
 
             # Prepare payload for RabbitMQ with Redis-generated ID

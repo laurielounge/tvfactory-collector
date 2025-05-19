@@ -139,13 +139,7 @@ class WebhitConsumerService(BaseAsyncFactory):
                             break  # Don't acknowledge - leave in queue for later
 
                         # Extract IP
-                        raw_ip = payload.get("client_ip", "").split(",")[0].strip()
-                        try:
-                            ip = format_ipv4_as_mapped_ipv6(raw_ip)
-                        except ValueError:
-                            logger.warning(f"[SKIP] Invalid IP: {raw_ip}")
-                            await message.ack()
-                            continue
+                        ip = payload.get("ipaddress")
 
                         # Update site hit counter - do this ONCE when we know the entry is valid
                         counter_key = (today, client_id, site_id)
@@ -218,17 +212,33 @@ class WebhitConsumerService(BaseAsyncFactory):
         logger.debug(f"[IS VALID WEBHIT] Query string was {q} and was {all(k in q for k in ('client', 'site') if q)}")
         return all(k in q for k in ("client", "site"))
 
-    async def _process_webhit_find_impression(self, client_id, ip, site_id, timestmp, redis_imp_id):
-        """Process a webhit with database fallback for impression correlation."""
-        # Step 1: Check Redis for impression ID
-        impression_id = int(redis_imp_id) if redis_imp_id else None
+    async def _process_webhit_find_impression(self, client_id, ip, site_id, timestmp) -> bool:
+        """Determine if this is a deduplicated, valid webhit and process it."""
 
-        # Step 2: If not in Redis, check database (infinitum_raw_data)
-        if not impression_id:
+        # Redis keys
+        imp_key = f"imp:{client_id}:{ip}"
+
+        # --- Step 1: Fast-path Redis check ---
+        impression_id = await self.redis.get(imp_key)
+
+        if impression_id:
+            impression_id = int(impression_id)
+            dedupe_key = f"dedupe:webhit:{client_id}:{ip}"
+            seen_sites = await self.redis.smembers(dedupe_key)
+
+            if str(site_id) in seen_sites:
+                logger.debug(f"[DEDUPE REDIS] Site already seen: client={client_id}, ip={ip}, site_id={site_id}")
+                return False
+
+            logger.debug(f"[MATCH REDIS] client={client_id}, ip={ip}, imp_id={impression_id}, site_id={site_id}")
+
+        else:
+            # --- Step 2: Fallback to DB ---
             try:
-                async with self.db.async_session_scope('INFINITUM_RAW') as db:
-                    # Use same query pattern as old system
+                async with self.db.async_session_scope('TVFACTORY') as db:
                     seven_days_ago = timestmp - timedelta(days=7)
+
+                    # Find latest impression
                     result = await db.execute(
                         select(Impression.id).where(
                             and_(
@@ -238,72 +248,65 @@ class WebhitConsumerService(BaseAsyncFactory):
                             )
                         ).order_by(Impression.timestmp.desc()).limit(1)
                     )
-                    row = result.scalars().first()
-                    if row:
-                        impression_id = row
-            except Exception as e:
-                logger.warning(f"Database lookup error: {e}")
+                    impression_id = result.scalars().first()
 
-        # Step 3: If no impression found, skip this webhit
-        if not impression_id:
-            logger.debug(f"No impression found for client {client_id}, IP {ip} - skipping")
-            return False
+                    if not impression_id:
+                        logger.debug(f"[NO MATCH] No impression found in DB for client={client_id}, ip={ip}")
+                        return False
 
-        # Step 4: Check if this site was already seen for this impression in last 24 hours
-        # First check Redis
-        dedupe_key = f"dedupe:webhit:{client_id}:{ip}"
-        seen_sites = await self.redis.smembers(dedupe_key)
+                    logger.debug(f"[MATCH DB] client={client_id}, ip={ip}, imp_id={impression_id}")
 
-        if str(site_id) in seen_sites:
-            logger.debug(f"Redis deduplication failed for {client_id=} {ip=} {site_id=}")
-            return False
-
-        # Then check database for recent matches
-        try:
-            async with self.db.async_session_scope('INFINITUM_RAW') as db:
-                one_day_ago = timestmp - timedelta(days=1)
-                result = await db.execute(
-                    select(WebHit.id).where(
-                        and_(
-                            WebHit.impression_id == impression_id,
-                            WebHit.site_id == site_id,
-                            WebHit.timestmp > one_day_ago
+                    # Check for DB dedupe
+                    one_day_ago = timestmp - timedelta(days=1)
+                    result = await db.execute(
+                        select(WebHit.id).where(
+                            and_(
+                                WebHit.impression_id == impression_id,
+                                WebHit.site_id == site_id,
+                                WebHit.timestmp > one_day_ago
+                            )
                         )
                     )
-                )
-                if result.scalars().first():
-                    logger.debug(f"Database deduplication failed for {impression_id=} {site_id=}")
-                    return False
+                    if result.scalars().first():
+                        logger.debug(
+                            f"[DEDUPE DB] Webhit already recorded for imp_id={impression_id}, site_id={site_id}")
+                        return False
+            except Exception as e:
+                logger.warning(f"[DB ERROR] Failed during DB fallback: {e}")
+                return False
+
+        # --- Step 3: Accept and Record ---
+        try:
+            webhit_id = await self.redis.incr("global:next_webhit_id")
+
+            # Update Redis dedupe list
+            pipe = self.redis.pipeline()
+            pipe.sadd(dedupe_key, site_id)
+            pipe.expire(dedupe_key, settings.ONE_DAY)
+            await pipe.execute()
+
+            # Publish to RabbitMQ
+            payload = {
+                "id": webhit_id,
+                "impression_id": impression_id,
+                "client_id": client_id,
+                "site_id": site_id,
+                "ipaddress": ip,
+                "timestamp": timestmp.isoformat() if isinstance(timestmp, datetime) else str(timestmp),
+            }
+
+            await self.rabbit.publish(
+                exchange="",
+                routing_key="resolved_webhits_queue",
+                message=payload
+            )
+
+            logger.debug(f"[ACCEPTED] Webhit {webhit_id} published for imp_id={impression_id}, site_id={site_id}")
+            return True
+
         except Exception as e:
-            logger.warning(f"Database deduplication check error: {e}")
-
-        # Step 5: Get webhit ID from Redis
-        webhit_id = await self.redis.incr("global:next_webhit_id")
-
-        # Step 6: Update Redis deduplication set
-        pipe = self.redis.pipeline()
-        pipe.sadd(dedupe_key, site_id)
-        pipe.expire(dedupe_key, settings.ONE_DAY)
-        await pipe.execute()
-
-        # Step 7: Publish to RabbitMQ
-        payload = {
-            "id": webhit_id,
-            "impression_id": impression_id,
-            "client_id": client_id,
-            "site_id": site_id,
-            "ipaddress": ip,
-            "timestamp": timestmp.isoformat() if isinstance(timestmp, datetime) else str(timestmp),
-        }
-
-        await self.rabbit.publish(
-            exchange="",
-            routing_key="resolved_webhits_queue",
-            message=payload
-        )
-
-        logger.debug(f"Processed webhit {webhit_id} for impression {impression_id}, client {client_id}, site {site_id}")
-        return True
+            logger.error(f"[FAIL PUBLISH] Could not publish webhit: {e}")
+            return False
 
     async def flush_site_hit_counters(self):
         """Flush site hit counters using SQLAlchemy's MySQL dialect"""
