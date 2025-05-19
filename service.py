@@ -108,8 +108,11 @@ async def run_sequence(run_once=False):
             imp_count = 0
             imp_start = time.time()
             max_imp_time = 30  # seconds
-
-            queue_length = await loghit_worker.rabbit.get_queue_length("raw_impressions_queue")
+            try:
+                queue_length = await loghit_worker.rabbit.get_queue_length("raw_impressions_queue")
+            except Exception as e:
+                logger.error(f"Error getting queue length: {e}")
+                queue_length = 0
             logger.info(f"[SEQUENCE] Found {queue_length} impressions to process")
 
             while queue_length > 0 and (time.time() - imp_start < max_imp_time) and (imp_count < max_items):

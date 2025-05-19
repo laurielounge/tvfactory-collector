@@ -9,7 +9,7 @@ from infrastructure.circuit_breaker import RedisHealthChecker, MariaDBHealthChec
 from infrastructure.database import AsyncDatabaseManager
 from infrastructure.rabbitmq_client import AsyncRabbitMQClient
 from infrastructure.redis_client import get_redis_client
-
+from config.settings import settings
 T = TypeVar("T", bound="BaseAsyncFactory")
 
 
@@ -20,6 +20,7 @@ class BaseAsyncFactory(ABC):
     """
 
     def __init__(self, require_redis=False, require_db=False, require_rabbit=False):
+        logger.info(f"Initializing {type(self).__name__}, rabbit {settings.RABBITMQ_HOST}")
         self.redis = None
         self.db = None
         self.rabbit = None

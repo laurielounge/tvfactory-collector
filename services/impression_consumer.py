@@ -1,16 +1,16 @@
 # services/impression_consumer.py
 
 import asyncio
-import ipaddress
 import json
 from datetime import datetime
 
 from config.settings import settings
 from core.logger import logger
 from infrastructure.async_factory import BaseAsyncFactory
-from utils.ip import format_ipv4_as_mapped_ipv6
-from utils.timer import StepTimer
 from models.impression import Impression
+from utils.redis_bootstrap import sync_redis_id_counter
+from utils.timer import StepTimer
+
 MAX_MESSAGES = 5000
 
 
@@ -47,6 +47,13 @@ class ImpressionConsumerService(BaseAsyncFactory):
             # Ensure our queues exist
             await self.rabbit.declare_queue(self.queue_name, durable=True)
             await self.rabbit.declare_queue("resolved_impressions_queue", durable=True)
+        await sync_redis_id_counter(
+            redis=self.redis,
+            db=self.db,
+            redis_key="global:next_impression_id",
+            model=Impression,
+            id_column=Impression.id
+        )
         logger.info("ImpressionConsumerService setup complete")
 
     async def process_batch(self, batch_size=MAX_MESSAGES, timeout=30.0):

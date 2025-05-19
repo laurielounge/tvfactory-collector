@@ -15,7 +15,7 @@ from infrastructure.async_factory import BaseAsyncFactory
 from models.impression import Impression
 from models.last_site_response import TargetLastSiteResponse
 from models.webhit import WebHit
-from utils.ip import format_ipv4_as_mapped_ipv6
+from utils.redis_bootstrap import sync_redis_id_counter
 from utils.timer import StepTimer
 
 MAX_MESSAGES = 5000
@@ -56,6 +56,13 @@ class WebhitConsumerService(BaseAsyncFactory):
             # Ensure our queues exist
             await self.rabbit.declare_queue(self.queue_name, durable=True)
             await self.rabbit.declare_queue("resolved_webhits_queue", durable=True)
+        await sync_redis_id_counter(
+            redis=self.redis,
+            db=self.db,
+            redis_key="global:next_webhit_id",
+            model=WebHit,
+            id_column=WebHit.id
+        )
         logger.info("WebhitConsumerService setup complete")
 
     # Override stop method to ensure counters are flushed

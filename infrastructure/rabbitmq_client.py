@@ -7,8 +7,10 @@ from typing import Callable, Any, Optional
 
 import aio_pika
 
-from config import settings
+from config.settings import settings
 from core.logger import logger
+
+logger.info(f"Starting rabbit connector with settings {settings.RABBITMQ_HOST}")
 
 
 class AsyncRabbitMQClient:

@@ -61,3 +61,4 @@ class Settings:
 
 # Initialize settings instance
 settings = Settings()
+logger.info(f"rabbitmq host: {settings.RABBITMQ_HOST}")

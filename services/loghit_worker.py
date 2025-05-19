@@ -32,8 +32,8 @@ class LoghitWorkerService(BaseAsyncFactory):
     """
 
     def __init__(self, run_once=False):
-        # Note: We've removed require_redis=True as we no longer need Redis
-        super().__init__(require_redis=False, require_rabbit=True)
+
+        super().__init__(require_redis=True, require_rabbit=True)
         self.queue_name = LOG_QUEUE
         self.run_once = run_once
         logger.info("LoghitWorkerService initialized")
