@@ -299,7 +299,7 @@ class WebhitConsumerService(BaseAsyncFactory):
                 "client_id": client_id,
                 "site_id": site_id,
                 "ipaddress": ip,
-                "timestamp": timestmp.isoformat() if isinstance(timestmp, datetime) else str(timestmp),
+                "timestmp": timestmp.isoformat() if isinstance(timestmp, datetime) else str(timestmp),
             }
 
             await self.rabbit.publish(

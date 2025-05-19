@@ -202,7 +202,7 @@ class ImpressionConsumerService(BaseAsyncFactory):
             # Prepare payload for RabbitMQ with Redis-generated ID
             publish_payloads.append({
                 "id": impression_id,
-                "timestamp": entry.get("timestamp") or timestmp.isoformat(),
+                "timestmp": entry.get("timestamp") or timestmp.isoformat(),
                 "client_id": client_id,
                 "booking_id": booking_id,
                 "creative_id": creative_id,
