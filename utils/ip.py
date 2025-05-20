@@ -1,7 +1,9 @@
 # utils/ip.py
-# utils/ip.py
 
 import ipaddress
+from ipaddress import ip_address
+
+from config.settings import settings
 
 
 def format_ipv4_as_mapped_ipv6(ip: str) -> str:
@@ -43,3 +45,12 @@ def format_ip_as_binary(ip: str) -> bytes:
         return ip_obj.packed
     except ValueError:
         raise ValueError(f"Invalid IP address format: {ip}")
+
+
+def is_bogon_ip(ip):
+    ip_addr = ip_address(ip)
+    for network in settings.BOGON_NETWORKS:
+        if ip_addr in network:
+            logger.debug(f"IP {ip} is in bogon network {network}")
+            return True
+    return False

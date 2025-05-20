@@ -49,6 +49,8 @@ Processes advertising impressions with sophisticated precision:
 
 ### WebhitConsumerService
 Handles website visits with refined correlation capabilities:
+A webhit is a webhit if all the following are true:
+An impression for the same combination of ipaddress and client_id have been received in the last seven days
 - Consumes messages from `raw_webhits_queue`
 - Correlates visits with impressions using Redis or database lookups
 - Prevents duplicate processing through Redis deduplication

@@ -2,7 +2,7 @@
 import ipaddress
 import re
 from urllib.parse import parse_qs
-
+from utils.ip import is_bogon_ip
 from core.logger import logger
 from utils.ip import format_ipv4_as_mapped_ipv6
 
@@ -85,10 +85,23 @@ def process_vector_payload(payload: dict) -> tuple[str, dict] | None:
     raw_ip = payload.get("client_ip", "").split(",")[0].strip()
     try:
         ipaddress.ip_address(raw_ip)
+        is_bogon = is_bogon_ip(raw_ip)
         ip = format_ipv4_as_mapped_ipv6(raw_ip)
+
+        # For impressions, consider preserving revenue
+        if is_bogon and category == "impression":
+            # Log but don't drop impressions from private networks
+            logger.info(f"Processing ungeolocation-capable impression from bogon: {raw_ip}")
+            # Flag it for the downstream process to avoid API calls
+            return None
+        elif is_bogon:
+            # For webhits, we can be more selective
+            logger.debug(f"Dropping bogon IP in webhit: {raw_ip}")
+            return None
+
     except ValueError:
         logger.warning(f"[SKIP] Invalid IP: {raw_ip}")
-        return None  # ← drop it upstream, no need to enqueue
+        return None
 
     # Build entry object for downstream
     entry = {
