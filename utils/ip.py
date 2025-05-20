@@ -4,6 +4,7 @@ import ipaddress
 from ipaddress import ip_address
 
 from config.settings import settings
+from core.logger import logger
 
 
 def format_ipv4_as_mapped_ipv6(ip: str) -> str:
