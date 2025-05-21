@@ -232,14 +232,14 @@ class WebhitConsumerService(BaseAsyncFactory):
             logger.info(f"We found a redis match with key imp:{client_id}:{ip}")
             impression_id = int(impression_id)
 
-            seen_sites = await self.redis.smembers(dedupe_key)
+            # Optimized Redis deduplication check using SISMEMBER
+            is_member = await self.redis.sismember(dedupe_key, str(site_id))
 
-            if str(site_id) in seen_sites:
+            if is_member:
                 logger.info(f"[DEDUPE REDIS] Site already seen: client={client_id}, ip={ip}, site_id={site_id}")
                 return False
 
             logger.info(f"[MATCH REDIS] client={client_id}, ip={ip}, imp_id={impression_id}, site_id={site_id}")
-
         else:
             # --- Step 2: Fallback to DB ---
             try:
