@@ -223,6 +223,14 @@ class ImpressionConsumerService(BaseAsyncFactory):
             dedupe_key = f"dedupe:webhit:{client_id}:{ip}"
             pipe.setex(redis_key, settings.ONE_WEEK, impression_id)
             pipe.delete(dedupe_key)
+        today_date = datetime.now().strftime("%Y-%m-%d")
+        for entry, impression_id in zip(entries, impression_ids):
+            q = entry["query"]
+            client_id = int(q["client"])
+            booking_id = int(q["booking"])
+
+            pipe.zincrby(f"daily:impressions:customers:{today_date}", 1, client_id)
+            pipe.zincrby(f"daily:impressions:bookings:{today_date}", 1, booking_id)
 
         await pipe.execute()
 

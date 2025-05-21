@@ -44,6 +44,7 @@ class WebhitConsumerService(BaseAsyncFactory):
         self.queue_name = "raw_webhits_queue"
         self.timer = StepTimer()
         self.run_once = run_once
+        self.today = datetime.now().strftime("%Y-%m-%d")
         # Site activity tracking
         self.site_hit_counters = {}  # Format: {(date, client_id, site_id): count}
         self.last_counter_flush = time.time()
@@ -75,6 +76,7 @@ class WebhitConsumerService(BaseAsyncFactory):
     async def process_batch(self, batch_size=MAX_MESSAGES, timeout=30.0):
         """Process webhits chronologically, stopping at too-recent entries."""
         logger.info(f"Processing batch of webhit messages (max size: {batch_size})")
+        self.today = datetime.now().strftime("%Y-%m-%d")
 
         # Fetch latest impression timestamp first
         latest_imp_ts = await self.redis.get("latest_impression_timestamp")
@@ -87,6 +89,7 @@ class WebhitConsumerService(BaseAsyncFactory):
             f"Latest impression timestamp: {datetime.fromtimestamp(float(latest_imp_ts)).isoformat() if latest_imp_ts else None}")
 
         # Check if we should flush counters
+        self.today = datetime.now().strftime("%Y-%m-%d")
         today = datetime.now().date()
         current_time = time.time()
         if current_time - self.last_counter_flush > self.counter_flush_interval:
@@ -151,7 +154,6 @@ class WebhitConsumerService(BaseAsyncFactory):
                         # Update site hit counter - do this ONCE when we know the entry is valid
                         counter_key = (today, client_id, site_id)
                         self.site_hit_counters[counter_key] = self.site_hit_counters.get(counter_key, 0) + 1
-
                         # Process the webhit
                         result = await self._process_webhit_find_impression(
                             client_id, ip, site_id, datetime.fromtimestamp(entry_ts))
@@ -224,7 +226,13 @@ class WebhitConsumerService(BaseAsyncFactory):
 
         # Redis keys
         imp_key = f"imp:{client_id}:{ip}"
+        site_key = f"daily:webhits:sites:{self.today}"
         dedupe_key = f"dedupe:webhit:{client_id}:{ip}"
+        await self.redis.zincrby(site_key, 1, site_id)
+        current_score = await self.redis.zscore(site_key, site_id)
+        if current_score == 1:  # First time seeing this site today
+            await self.redis.expire(site_key, 86400 * 2)
+
         # --- Step 1: Fast-path Redis check ---
         impression_id = await self.redis.get(imp_key)
 
