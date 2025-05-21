@@ -4,6 +4,8 @@ import asyncio
 import signal
 import sys
 import time
+import cProfile
+import pstats
 
 from dotenv import load_dotenv
 
@@ -210,6 +212,7 @@ async def main():
     parser.add_argument("--interval", type=int, help="Interval between processing cycles")
     parser.add_argument("--parallel", action="store_true", help="Use parallel processing (only for loghit)")
     parser.add_argument("--workers", type=int, default=4, help="Number of parallel workers (with --parallel)")
+    parser.add_argument("--profile", action="store_true", help="Enable profiling")
     args = parser.parse_args()
 
     if args.once:
@@ -273,15 +276,40 @@ if __name__ == "__main__":
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda s, f: asyncio.create_task(graceful_shutdown(s, f)))
 
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Service interrupted by user.")
-    except Exception as e:
-        logger.error(f"Unhandled exception: {e}")
-        sys.exit(1)
-    finally:
-        # Ensure any remaining cleanup happens
-        if active_services:
-            asyncio.run(graceful_shutdown())
-        logger.info("Service shut down")
+    # Check if profiling is enabled
+    args_for_main = sys.argv[1:]  # Re-parse or pass args to avoid issues with --profile being unknown to main's parser
+    enable_profiling = "--profile" in args_for_main
+
+    if enable_profiling:
+        prof = cProfile.Profile()
+        try:
+            prof.enable()
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            logger.info("Service interrupted by user (profiling active).")
+        except Exception as e:
+            logger.error(f"Unhandled exception (profiling active): {e}")
+            sys.exit(1)
+        finally:
+            prof.disable()
+            logger.info("Profiling disabled.")
+            stats = pstats.Stats(prof)
+            stats.dump_stats("output.prof")
+            logger.info("Profiling stats saved to output.prof")
+            # Ensure any remaining cleanup happens
+            if active_services:
+                asyncio.run(graceful_shutdown())
+            logger.info("Service shut down (profiling active)")
+    else:
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            logger.info("Service interrupted by user.")
+        except Exception as e:
+            logger.error(f"Unhandled exception: {e}")
+            sys.exit(1)
+        finally:
+            # Ensure any remaining cleanup happens
+            if active_services:
+                asyncio.run(graceful_shutdown())
+            logger.info("Service shut down")
