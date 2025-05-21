@@ -78,7 +78,7 @@ class Settings:
         ip_network("255.255.255.255/32"),
         ip_network("::/128"),
         ip_network("::1/128"),
-        ip_network("::ffff:0:0/96"),
+        # ip_network("::ffff:0:0/96"),
         ip_network("192.88.99.0/24"),
         ip_network("::/96"),
         ip_network("100::/64"),
