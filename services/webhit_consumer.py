@@ -228,33 +228,43 @@ class WebhitConsumerService(BaseAsyncFactory):
         imp_key = f"imp:{client_id}:{ip}"
         site_key = f"daily:webhits:sites:{self.today}"
         dedupe_key = f"dedupe:webhit:{client_id}:{ip}"
-        await self.redis.zincrby(site_key, 1, site_id)
-        current_score = await self.redis.zscore(site_key, site_id)
-        if current_score == 1:  # First time seeing this site today
-            await self.redis.expire(site_key, 86400 * 2)
 
-        # --- Step 1: Fast-path Redis check ---
+        # 🔐 Defensive Redis key type check
+        site_key_type = await self.redis.type(site_key)
+        if site_key_type not in [b'none', b'zset']:
+            logger.warning(f"[REDIS CORRUPTION] {site_key} is {site_key_type.decode()}, expected 'zset'. Resetting.")
+            await self.redis.delete(site_key)
+
+        try:
+            # 🔢 Increment raw hit count for site
+            await self.redis.zincrby(site_key, 1, site_id)
+            current_score = await self.redis.zscore(site_key, site_id)
+            if current_score == 1:
+                await self.redis.expire(site_key, 86400 * 2)
+        except Exception as e:
+            logger.error(f"[ZINCRBY FAIL] Could not count webhit for site {site_id}: {e}")
+
+        # --- Step 1: Fast-path Redis impression check ---
         impression_id = await self.redis.get(imp_key)
 
         if impression_id:
-            logger.info(f"We found a redis match with key imp:{client_id}:{ip}")
+            logger.info(f"We found a redis match with key {imp_key}")
             impression_id = int(impression_id)
 
-            # Optimized Redis deduplication check using SISMEMBER
+            # Dedupe check using Redis set
             is_member = await self.redis.sismember(dedupe_key, str(site_id))
-
             if is_member:
                 logger.info(f"[DEDUPE REDIS] Site already seen: client={client_id}, ip={ip}, site_id={site_id}")
                 return False
 
             logger.info(f"[MATCH REDIS] client={client_id}, ip={ip}, imp_id={impression_id}, site_id={site_id}")
+
         else:
-            # --- Step 2: Fallback to DB ---
+            # --- Step 2: DB Fallback ---
             try:
                 async with self.db.async_session_scope('TVFACTORY') as db:
                     seven_days_ago = timestmp - timedelta(days=7)
 
-                    # Find latest impression
                     result = await db.execute(
                         select(Impression.id).where(
                             and_(
@@ -272,7 +282,6 @@ class WebhitConsumerService(BaseAsyncFactory):
 
                     logger.debug(f"[MATCH DB] client={client_id}, ip={ip}, imp_id={impression_id}")
 
-                    # Check for DB dedupe
                     one_day_ago = timestmp - timedelta(days=1)
                     result = await db.execute(
                         select(WebHit.id).where(
@@ -287,21 +296,21 @@ class WebhitConsumerService(BaseAsyncFactory):
                         logger.debug(
                             f"[DEDUPE DB] Webhit already recorded for imp_id={impression_id}, site_id={site_id}")
                         return False
+
             except Exception as e:
                 logger.warning(f"[DB ERROR] Failed during DB fallback: {e}")
                 return False
 
-        # --- Step 3: Accept and Record ---
+        # --- Step 3: Accept and publish ---
         try:
             webhit_id = await self.redis.incr("global:next_webhit_id")
 
-            # Update Redis dedupe list
+            # Redis dedupe set update
             pipe = self.redis.pipeline()
             pipe.sadd(dedupe_key, site_id)
             pipe.expire(dedupe_key, settings.ONE_DAY)
             await pipe.execute()
 
-            # Publish to RabbitMQ
             payload = {
                 "id": webhit_id,
                 "impression_id": impression_id,
