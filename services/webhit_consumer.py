@@ -231,8 +231,9 @@ class WebhitConsumerService(BaseAsyncFactory):
 
         # 🔐 Defensive Redis key type check
         site_key_type = await self.redis.type(site_key)
-        if site_key_type not in [b'none', b'zset']:
-            logger.warning(f"[REDIS CORRUPTION] {site_key} is {site_key_type.decode()}, expected 'zset'. Resetting.")
+        key_type_str = site_key_type.decode() if isinstance(site_key_type, bytes) else site_key_type
+        if key_type_str not in ['none', 'zset']:
+            logger.warning(f"[REDIS CORRUPTION] {site_key} is {key_type_str}, expected 'zset'. Resetting.")
             await self.redis.delete(site_key)
 
         try:
@@ -326,7 +327,8 @@ class WebhitConsumerService(BaseAsyncFactory):
                 message=payload
             )
 
-            logger.debug(f"[ACCEPTED] Webhit {webhit_id} published for imp_id={impression_id}, site_id={site_id}")
+            logger.info(
+                f"[WEBHIT ACCEPTED TO QUEUE] Webhit {webhit_id} published for imp_id={impression_id}, site_id={site_id} ip {ip}")
             return True
 
         except Exception as e:
