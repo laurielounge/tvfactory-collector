@@ -2,9 +2,10 @@
 import ipaddress
 import re
 from urllib.parse import parse_qs
-from utils.ip import is_bogon_ip
+
 from core.logger import logger
 from utils.ip import format_ipv4_as_mapped_ipv6
+from utils.ip import is_bogon_ip
 
 # Precompile regex patterns for performance
 INT_HEAD = re.compile(r"^\d+")

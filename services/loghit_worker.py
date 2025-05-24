@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+from datetime import datetime
 
 from core.logger import logger
 from infrastructure.async_factory import BaseAsyncFactory
@@ -71,8 +72,15 @@ class LoghitWorkerService(BaseAsyncFactory):
                 # Parse message directly without conversion
                 payload = json.loads(message.body)
                 logger.debug(f"Received {payload}")
+                # Count raw message per edge server by hostname
+                try:
+                    today = datetime.utcnow().strftime("%Y-%m-%d")
+                    hostname = payload.get("hostname", payload.get("host", "unknown"))
+                    key = f"daily:edgeserver:{hostname}:{today}"
+                    await self.redis.incr(key)
+                except Exception as e:
+                    logger.warning(f"[EDGECOUNTER FAIL] Could not increment Redis counter for host={hostname}: {e}")
 
-                # Use the new Vector-specific processor
                 result = process_vector_payload(payload)
 
                 if result:
