@@ -4,12 +4,14 @@ import json
 import logging
 from datetime import datetime
 
+from config.settings import settings
 from core.logger import logger
 from infrastructure.async_factory import BaseAsyncFactory
 from services.vector_processor import process_vector_payload
 
 LOG_QUEUE = "loghit_queue"
 BATCH_SIZE = 10000
+
 
 
 class LoghitWorkerService(BaseAsyncFactory):
@@ -74,7 +76,7 @@ class LoghitWorkerService(BaseAsyncFactory):
                 logger.debug(f"Received {payload}")
                 # Count raw message per edge server by hostname
                 try:
-                    today = datetime.utcnow().strftime("%Y-%m-%d")
+                    today = datetime.now(settings.TIME_ZONE).strftime("%Y-%m-%d")
                     hostname = payload.get("hostname", payload.get("host", "unknown"))
                     key = f"daily:edgeserver:{hostname}:{today}"
                     await self.redis.incr(key)

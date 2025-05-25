@@ -2,6 +2,7 @@
 import os
 from ipaddress import ip_network
 
+import pytz
 from dotenv import load_dotenv
 
 from core.logger import logger
@@ -56,7 +57,7 @@ class Settings:
     RETRY_DELAY = 5
     ONE_DAY = 86400
     ONE_WEEK = 604800
-
+    TIME_ZONE = pytz.timezone("Pacific/Auckland")
     # Logging the loaded configuration values (without sensitive data)
     logger.info(f"Host name to check we read .env: {RABBITMQ_HOST}")
 
